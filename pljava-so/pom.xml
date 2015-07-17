@@ -122,11 +122,6 @@
 					<linker>
 						<libs>
 							<lib>
-								<name>jvm</name>
-								<type>shared</type>
-								<directory>${sun.boot.library.path}/server</directory>
-							</lib>
-							<lib>
 								<name>ecpg</name>
 								<type>shared</type>
 								<directory>${PGSQL_LIBDIR}</directory>

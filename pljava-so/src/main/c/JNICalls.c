@@ -14,6 +14,7 @@
 #include "pljava/type/String.h"
 
 JNIEnv* jniEnv;
+jint JNICALL (*pljava_createvm)(JavaVM **, void **, void *);
 
 #if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER >= 3))
 extern PGDLLIMPORT int log_min_messages;
@@ -454,7 +455,7 @@ void JNI_callVoidMethodV(jobject object, jmethodID methodID, va_list args)
 jint JNI_createVM(JavaVM** javaVM, JavaVMInitArgs* vmArgs)
 {
 	JNIEnv* env = 0;
-	jint jstat = JNI_CreateJavaVM(javaVM, (void **)&env, vmArgs);
+	jint jstat = pljava_createvm(javaVM, (void **)&env, vmArgs);
 	if(jstat == JNI_OK)
 		jniEnv = env;
 	return jstat;
