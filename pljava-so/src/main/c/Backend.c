@@ -108,47 +108,96 @@ extern void SQLOutputToTuple_initialize(void);
 
 static void registerGUCOptions(void);
 
+enum initstage
+{
+	IS_FORMLESS_VOID,
+	IS_GUCS_REGISTERED,
+	IS_CAND_JVMLOCATION,
+	IS_CAND_JVMOPENED,
+	IS_CREATEVM_SYM_FOUND,
+};
+
+static enum initstage initstage = IS_FORMLESS_VOID;
+static void *libjvm_handle;
+
+static void initsequencer(enum initstage is, _Bool tolerant);
+static void initsequencer(enum initstage is, _Bool tolerant)
+{
+	switch (is)
+	{
+	case IS_FORMLESS_VOID:
+		registerGUCOptions();
+		initstage = IS_GUCS_REGISTERED;
+
+	case IS_GUCS_REGISTERED:
+		if ( NULL == libjvmlocation )
+		{
+			ereport(WARNING, (
+				errmsg("Java virtual machine not yet loaded"),
+				errdetail("location of libjvm is not configured"),
+				errhint("SET pljava.libjvm_location TO the correct "
+						"path to the libjvm (.so or .dll, etc.)")));
+			goto check_tolerant;
+		}
+		initstage = IS_CAND_JVMLOCATION;
+
+	case IS_CAND_JVMLOCATION:
+		libjvm_handle = pg_dlopen(libjvmlocation);
+		if ( NULL == libjvm_handle )
+		{
+			ereport(WARNING, (
+				errmsg("Java virtual machine not yet loaded"),
+				errdetail("%s", (char *)pg_dlerror()),
+				errhint("SET pljava.libjvm_location TO the correct "
+						"path to the libjvm (.so or .dll, etc.)")));
+			goto check_tolerant;
+		}
+		initstage = IS_CAND_JVMOPENED;
+
+	case IS_CAND_JVMOPENED:
+		pljava_createvm =
+			(jint JNICALL (*)(JavaVM **, void **, void *))
+			pg_dlsym(libjvm_handle, "JNI_CreateJavaVM");
+		if ( NULL == pljava_createvm )
+		{
+			/*
+			 * If it hasn't got the symbol, it can't be the right
+			 * library, so close/unload it so another can be tried.
+			 * Format the dlerror string first: dlclose may clobber it.
+			 */
+			char *dle = (pre_format_elog_string(errno, TEXTDOMAIN),
+				format_elog_string("%s", (char *)pg_dlerror()));
+			pg_dlclose(libjvm_handle);
+			initstage = IS_CAND_JVMLOCATION;
+			ereport(WARNING, (
+				errmsg("Java virtual machine not yet started"),
+				errdetail("%s", dle),
+				errhint("Is the file named in pljava.libjvm_location "
+						"the right one?")));
+			goto check_tolerant;
+		}
+		initstage = IS_CREATEVM_SYM_FOUND;
+
+	case IS_CREATEVM_SYM_FOUND:
+		return;
+
+	default:
+		ereport(ERROR, (
+			errmsg("PL/Java startup failed"),
+			errdetail("unexpected stage in startup sequence")));
+	}
+
+check_tolerant:
+	if ( !tolerant ) {
+		ereport(ERROR, (
+			errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			errmsg("PL/Java used before its startup complete")));
+	}
+}
+
 void _PG_init()
 {
-	void *libjvm_handle;
-
-	registerGUCOptions();
-	
-	if ( NULL == libjvmlocation )
-	{
-		ereport(ERROR, (errcode(ERRCODE_CONFIG_FILE_ERROR),
-			errmsg("could not load Java virtual machine"),
-			errdetail("location of libjvm is not configured"),
-			errhint("SET pljava.libjvm_location TO the correct path "
-					"to the libjvm (.so or .dll, etc.)")));
-	}
-
-	libjvm_handle = pg_dlopen(libjvmlocation);
-
-	if ( NULL == libjvm_handle )
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-			errmsg("could not load Java virtual machine"),
-			errdetail("%s", (char *)pg_dlerror()),
-			errhint("SET pljava.libjvm_location TO the correct path "
-					"to the libjvm (.so or .dll, etc.)")));
-	}
-
-	pljava_createvm =
-		(jint JNICALL (*)(JavaVM **, void **, void *))
-		pg_dlsym(libjvm_handle, "JNI_CreateJavaVM");
-
-	if ( NULL == pljava_createvm )
-	{
-		char *dle = (pre_format_elog_string(errno, TEXTDOMAIN),
-			format_elog_string("%s", (char *)pg_dlerror()));
-		pg_dlclose(libjvm_handle);
-		ereport(ERROR, (errcode(ERRCODE_SYSTEM_ERROR),
-			errmsg("could not link Java virtual machine"),
-			errdetail("%s", dle),
-			errhint("Is the file named in pljava.libjvm_location "
-					"the right one?")));
-	}
+	initsequencer( initstage, true);
 }
 
 static void initPLJavaClasses(void)
@@ -850,6 +899,7 @@ static Datum internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
 
 	if(s_javaVM == 0)
 	{
+		initsequencer( initstage, false);
 		Invocation_pushBootContext(&ctx);
 		PG_TRY();
 		{
