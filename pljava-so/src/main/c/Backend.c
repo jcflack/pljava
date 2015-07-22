@@ -106,7 +106,28 @@ extern void SQLOutputToChunk_initialize(void);
 extern void SQLInputFromTuple_initialize(void);
 extern void SQLOutputToTuple_initialize(void);
 
+
+typedef struct {
+	JavaVMOption* options;
+	unsigned int  size;
+	unsigned int  capacity;
+} JVMOptList;
+
 static void registerGUCOptions(void);
+static jboolean initializeJavaVM(JVMOptList*);
+static void JVMOptList_init(JVMOptList*);
+static void JVMOptList_delete(JVMOptList*);
+static void JVMOptList_add(JVMOptList*, const char*, void*, bool);
+static void addUserJVMOptions(JVMOptList*);
+static void checkIntTimeType(void);
+static char* getClassPath(const char*);
+static void pljavaStatementCancelHandler(int);
+static void pljavaDieHandler(int);
+static void pljavaQuickDieHandler(int);
+static jint JNICALL my_vfprintf(FILE*, const char*, va_list);
+static void _destroyJavaVM(int, Datum);
+static void initPLJavaClasses(void);
+static void initJavaSession(void);
 
 enum initstage
 {
@@ -115,6 +136,11 @@ enum initstage
 	IS_CAND_JVMLOCATION,
 	IS_CAND_JVMOPENED,
 	IS_CREATEVM_SYM_FOUND,
+	IS_MISC_ONCE_DONE,
+	IS_JAVAVM_OPTLIST,
+	IS_JAVAVM_STARTED,
+	IS_SIGHANDLERS,
+	IS_COMPLETE
 };
 
 static enum initstage initstage = IS_FORMLESS_VOID;
@@ -123,6 +149,9 @@ static void *libjvm_handle;
 static void initsequencer(enum initstage is, _Bool tolerant);
 static void initsequencer(enum initstage is, _Bool tolerant)
 {
+	JVMOptList optList;
+	Invocation ctx;
+
 	switch (is)
 	{
 	case IS_FORMLESS_VOID:
@@ -179,6 +208,83 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		initstage = IS_CREATEVM_SYM_FOUND;
 
 	case IS_CREATEVM_SYM_FOUND:
+		s_javaLogLevel = INFO;
+		checkIntTimeType();
+		HashMap_initialize();
+#ifdef PLJAVA_DEBUG
+		/* Hard setting for debug. Don't forget to recompile...
+		 */
+		pljavaDebug = 1;
+#endif
+		initstage = IS_MISC_ONCE_DONE;
+
+	case IS_MISC_ONCE_DONE:
+		JVMOptList_init(&optList);
+		addUserJVMOptions(&optList);
+		/**
+		 * As stipulated by JRT-2003
+		 */
+		JVMOptList_add(&optList, 
+			"-Dsqlj.defaultconnection=jdbc:default:connection",
+			0, true);
+		JVMOptList_add(&optList, "vfprintf", (void*)my_vfprintf, true);
+#ifndef GCJ
+		JVMOptList_add(&optList, "-Xrs", 0, true);
+#endif
+		effectiveClassPath = getClassPath("-Djava.class.path=");
+		if(effectiveClassPath != 0)
+		{
+			JVMOptList_add(&optList, effectiveClassPath, 0, true);
+		}
+		initstage = IS_JAVAVM_OPTLIST;
+
+	case IS_JAVAVM_OPTLIST:
+		if( JNI_OK != initializeJavaVM(&optList) )
+		{
+			ereport(WARNING, (errmsg("Failed to create Java VM")));
+			goto check_tolerant;
+		}
+		elog(DEBUG1, "JavaVM created");
+		initstage = IS_JAVAVM_STARTED;
+
+	case IS_JAVAVM_STARTED:
+#if !defined(WIN32)
+		pqsignal(SIGINT,  pljavaStatementCancelHandler);
+		pqsignal(SIGTERM, pljavaDieHandler);
+		pqsignal(SIGQUIT, pljavaQuickDieHandler);
+#endif
+		/* Register an on_proc_exit handler that destroys the VM
+		 */
+		on_proc_exit(_destroyJavaVM, 0);
+		initstage = IS_SIGHANDLERS;
+
+	case IS_SIGHANDLERS:
+		Invocation_pushBootContext(&ctx);
+		PG_TRY();
+		{
+			initPLJavaClasses();
+			initJavaSession();
+			Invocation_popBootContext();
+		}
+		PG_CATCH();
+		{
+			Invocation_popBootContext();
+			/* JVM initialization failed for some reason. Destroy
+			 * the VM if it exists. Perhaps the user will try
+			 * fixing the pljava.classpath and make a new attempt.
+			 */
+			_destroyJavaVM(0, 0);
+			initstage = IS_MISC_ONCE_DONE;
+			/* We can't stay here...
+			 */
+			if ( tolerant )
+				PG_TRY_RETURN_VOID;
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+		initstage = IS_COMPLETE;
+
+	case IS_COMPLETE:
 		return;
 
 	default:
@@ -366,7 +472,7 @@ static void appendPathParts(const char* path, StringInfoData* bld, HashMap uniqu
 			else
 				ereport(ERROR, (
 					errcode(ERRCODE_INVALID_NAME),
-					errmsg("invalid macro name '%*s' in dynamic library path", (int)len, path)));
+					errmsg("invalid macro name '%*s' in class path", (int)len, path)));
 		}
 
 		if(len > 0)
@@ -521,12 +627,6 @@ static void _destroyJavaVM(int status, Datum dummy)
 	}
 }
 
-typedef struct {
-	JavaVMOption* options;
-	unsigned int  size;
-	unsigned int  capacity;
-} JVMOptList;
-
 static void JVMOptList_init(JVMOptList* jol)
 {
 	jol->options  = (JavaVMOption*)palloc(10 * sizeof(JavaVMOption));
@@ -674,51 +774,11 @@ static void checkIntTimeType(void)
 	elog(DEBUG1, integerDateTimes ? "Using integer_datetimes" : "Not using integer_datetimes");
 }
 
-static bool s_firstTimeInit = true;
-
-static void initializeJavaVM(void)
+static jboolean initializeJavaVM(JVMOptList *optList)
 {
 	jboolean jstat;
 	JavaVMInitArgs vm_args;
-	JVMOptList optList;
 
-	JVMOptList_init(&optList);
-
-	if(s_firstTimeInit)
-	{
-		s_firstTimeInit = false;
-		s_javaLogLevel = INFO;
-
-		checkIntTimeType();
-		HashMap_initialize();
-	
-		s_firstTimeInit = false;
-	}
-
-#ifdef PLJAVA_DEBUG
-	/* Hard setting for debug. Don't forget to recompile...
-	 */
-	pljavaDebug = 1;
-#endif
-
-	addUserJVMOptions(&optList);
-	effectiveClassPath = getClassPath("-Djava.class.path=");
-	if(effectiveClassPath != 0)
-	{
-		JVMOptList_add(&optList, effectiveClassPath, 0, true);
-	}
-
-	/**
-	 * As stipulated by JRT-2003
-	 */
-	JVMOptList_add(&optList, 
-		"-Dsqlj.defaultconnection=jdbc:default:connection",
-		0, true);
-
-	JVMOptList_add(&optList, "vfprintf", (void*)my_vfprintf, true);
-#ifndef GCJ
-	JVMOptList_add(&optList, "-Xrs", 0, true);
-#endif
 	if(pljavaDebug)
 	{
 		elog(INFO, "Backend pid = %d. Attach the debugger and set pljavaDebug to false to continue", getpid());
@@ -726,8 +786,8 @@ static void initializeJavaVM(void)
 			pg_usleep(1000000L);
 	}
 
-	vm_args.nOptions = optList.size;
-	vm_args.options  = optList.options;
+	vm_args.nOptions = optList->size;
+	vm_args.options  = optList->options;
 	vm_args.version  = JNI_VERSION_1_4;
 	vm_args.ignoreUnrecognized = JNI_FALSE;
 
@@ -741,23 +801,9 @@ static void initializeJavaVM(void)
 		JNI_exceptionClear();
 		jstat = JNI_ERR;
 	}
-	JVMOptList_delete(&optList);
+	JVMOptList_delete(optList);
 
-	if(jstat != JNI_OK)
-		ereport(ERROR, (errmsg("Failed to create Java VM")));
-
-#if !defined(WIN32)
-	pqsignal(SIGINT,  pljavaStatementCancelHandler);
-	pqsignal(SIGTERM, pljavaDieHandler);
-	pqsignal(SIGQUIT, pljavaQuickDieHandler);
-#endif
-	elog(DEBUG1, "JavaVM created");
-
-	/* Register an on_proc_exit handler that destroys the VM
-	 */
-	on_proc_exit(_destroyJavaVM, 0);
-	initPLJavaClasses();
-	initJavaSession();
+	return jstat;
 }
 
 static void registerGUCOptions(void)
@@ -897,30 +943,9 @@ static Datum internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
 	Invocation ctx;
 	Datum retval = 0;
 
-	if(s_javaVM == 0)
+	if ( IS_COMPLETE != initstage )
 	{
 		initsequencer( initstage, false);
-		Invocation_pushBootContext(&ctx);
-		PG_TRY();
-		{
-			initializeJavaVM();
-			Invocation_popBootContext();
-		}
-		PG_CATCH();
-		{
-			Invocation_popBootContext();
-
-			/* JVM initialization failed for some reason. Destroy
-			 * the VM if it exists. Perhaps the user will try
-			 * fixing the pljava.classpath and make a new attempt.
-			 */
-			_destroyJavaVM(0, 0);			
-
-			/* We can't stay here...
-			 */
-			PG_RE_THROW();
-		}
-		PG_END_TRY();
 
 		/* Force initial setting
  		 */
