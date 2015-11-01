@@ -44,9 +44,19 @@
 #include "utils/timeout.h"
 #endif
 
-/* Example format: "/usr/local/pgsql/lib" */
+/* Example format: /usr/local/pgsql/lib */
 #ifndef PKGLIBDIR
 #error "PKGLIBDIR needs to be defined to compile this file."
+/*
+ * Though really, the only bad thing that would happen without it is $libdir
+ * wouldn't be expandable in pljava.classpath.
+ */
+#else
+/*
+ * CppAsString2 first appears in PG8.4.  IF that's a problem, the definition
+ * is really simple.
+ */
+#define PKGLIBDIRSTRING CppAsString2(PKGLIBDIR)
 #endif
 
 /* Include the 'magic block' that PostgreSQL 8.2 and up will use to ensure
@@ -82,6 +92,7 @@ static jmethodID s_setTrusted;
 static char* libjvmlocation;
 static char* vmoptions;
 static char* classpath;
+static char* implementors;
 static int   statementCacheSize;
 static bool  pljavaDebug;
 static bool  pljavaReleaseLingeringSavepoints;
@@ -210,7 +221,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 	case IS_CREATEVM_SYM_FOUND:
 		s_javaLogLevel = INFO;
 		checkIntTimeType();
-		HashMap_initialize();
+		HashMap_initialize(); /* creates things in TopMemoryContext */
 #ifdef PLJAVA_DEBUG
 		/* Hard setting for debug. Don't forget to recompile...
 		 */
@@ -219,7 +230,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		initstage = IS_MISC_ONCE_DONE;
 
 	case IS_MISC_ONCE_DONE:
-		JVMOptList_init(&optList);
+		JVMOptList_init(&optList); /* uses CurrentMemoryContext */
 		addUserJVMOptions(&optList);
 		/**
 		 * As stipulated by JRT-2003
@@ -463,16 +474,18 @@ static void appendPathParts(const char* path, StringInfoData* bld, HashMap uniqu
 		initStringInfo(&buf);
 		if(*path == '$')
 		{
+#if defined(PKGLIBDIRSTRING)
 			if(len == 7 || (strcspn(path, "/\\") == 7 && strncmp(path, "$libdir", 7) == 0))
 			{
 				len -= 7;
 				path += 7;
-				appendStringInfo(&buf, PKGLIBDIR);
+				appendStringInfo(&buf, PKGLIBDIRSTRING);
 			}
 			else
+#endif
 				ereport(ERROR, (
 					errcode(ERRCODE_INVALID_NAME),
-					errmsg("invalid macro name '%*s' in class path", (int)len, path)));
+					errmsg("invalid macro name '%*s' in PL/Java classpath", (int)len, path)));
 		}
 
 		if(len > 0)
@@ -911,12 +924,35 @@ static void registerGUCOptions(void)
 		#endif
 		NULL, NULL);
 
+	DefineCustomStringVariable(
+		"pljava.implementors",
+		"Implementor names recognized in deployment descriptors",
+		NULL,
+		&implementors,
+		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
+			"postgresql",
+		#endif
+		PGC_USERSET,
+		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
+			GUC_LIST_INPUT | GUC_LIST_QUOTE,
+		#endif
+		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
+			NULL,
+		#endif
+		NULL, NULL);
+
 	EmitWarningsOnPlaceholders("pljava");
 }
 
 static Datum internalCallHandler(bool trusted, PG_FUNCTION_ARGS);
 
+#if (PGSQL_MAJOR_VER > 8)
+extern PGDLLEXPORT Datum javau_call_handler(PG_FUNCTION_ARGS);
+#elif defined(_MSC_VER)
+extern __declspec (dllexport) Datum javau_call_handler(PG_FUNCTION_ARGS);
+#else 
 extern Datum javau_call_handler(PG_FUNCTION_ARGS);
+#endif
 PG_FUNCTION_INFO_V1(javau_call_handler);
 
 /*
@@ -927,7 +963,13 @@ Datum javau_call_handler(PG_FUNCTION_ARGS)
 	return internalCallHandler(false, fcinfo);
 }
 
+#if (PGSQL_MAJOR_VER > 9)
+extern PGDLLEXPORT Datum java_call_handler(PG_FUNCTION_ARGS);
+#elif defined(_MSC_VER)
+extern __declspec (dllexport) Datum java_call_handler(PG_FUNCTION_ARGS);
+#else
 extern Datum java_call_handler(PG_FUNCTION_ARGS);
+#endif
 PG_FUNCTION_INFO_V1(java_call_handler);
 
 /*
