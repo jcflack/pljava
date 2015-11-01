@@ -156,12 +156,14 @@ enum initstage
 
 static enum initstage initstage = IS_FORMLESS_VOID;
 static void *libjvm_handle;
+static bool jvmStartedAtLeastOnce = false;
 
 static void initsequencer(enum initstage is, _Bool tolerant);
 static void initsequencer(enum initstage is, _Bool tolerant)
 {
 	JVMOptList optList;
 	Invocation ctx;
+	jint JNIresult;
 
 	switch (is)
 	{
@@ -250,11 +252,23 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		initstage = IS_JAVAVM_OPTLIST;
 
 	case IS_JAVAVM_OPTLIST:
-		if( JNI_OK != initializeJavaVM(&optList) )
+		JNIresult = initializeJavaVM(&optList); /* frees the optList */
+		if( JNI_OK != JNIresult )
 		{
-			ereport(WARNING, (errmsg("Failed to create Java VM")));
+			initstage = IS_MISC_ONCE_DONE; /* optList has been freed */
+			ereport(WARNING,
+				(errmsg("failed to create Java virtual machine"),
+				 errdetail("JNI_CreateJavaVM returned an error code: %d",
+					JNIresult),
+				 jvmStartedAtLeastOnce ?
+					errhint("Because an earlier attempt during this session "
+					"did start a VM before failing, this probably means your "
+					"Java runtime environment does not support more than one "
+					"VM creation per session.  You may need to exit this "
+					"session and start a new one.") : 0));
 			goto check_tolerant;
 		}
+		jvmStartedAtLeastOnce = true;
 		elog(DEBUG1, "JavaVM created");
 		initstage = IS_JAVAVM_STARTED;
 
@@ -284,7 +298,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 			 * the VM if it exists. Perhaps the user will try
 			 * fixing the pljava.classpath and make a new attempt.
 			 */
-			_destroyJavaVM(0, 0);
+			_destroyJavaVM(0, 0); /* which undoes the sighandlers, btw */
 			initstage = IS_MISC_ONCE_DONE;
 			/* We can't stay here...
 			 */
@@ -300,15 +314,27 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 
 	default:
 		ereport(ERROR, (
-			errmsg("PL/Java startup failed"),
-			errdetail("unexpected stage in startup sequence")));
+			errmsg("cannot set up PL/Java"),
+			errdetail(
+				"An unexpected stage was reached in the startup sequence."),
+			errhint(
+				"Please report the circumstances to the PL/Java maintainers.")
+			));
 	}
 
 check_tolerant:
 	if ( !tolerant ) {
 		ereport(ERROR, (
 			errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-			errmsg("PL/Java used before its startup complete")));
+			errmsg(
+				"cannot use PL/Java before successfully completing its setup"),
+			errhint(
+				"Check the log for messages closely preceding this one, "
+				"detailing what step of setup failed and what will be needed, "
+				"probably setting one of the \"pljava.\" configuration "
+				"variables, to complete the setup. If there is not enough "
+				"help in the log, try again with different settings for "
+				"\"log_min_messages\" or \"log_error_verbosity\".")));
 	}
 }
 
