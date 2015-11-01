@@ -824,122 +824,122 @@ static void registerGUCOptions(void)
 	DefineCustomStringVariable(
 		"pljava.libjvm_location",
 		"Path to the libjvm (.so, .dll, etc.) file in Java's jre/lib area",
-		NULL,
+		NULL, /* extended description */
 		&libjvmlocation,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
 			"libjvm",
 		#endif
 		PGC_SUSET,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			0,
+			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL,
+			NULL, /* check hook */
 		#endif
-		NULL, NULL);
+		NULL, NULL); /* assign hook, show hook */
 
 	DefineCustomStringVariable(
 		"pljava.vmoptions",
 		"Options sent to the JVM when it is created",
-		NULL,
+		NULL, /* extended description */
 		&vmoptions,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			NULL,
+			NULL, /* boot value */
 		#endif
 		PGC_SUSET,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			0,
+			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL,
+			NULL, /* check hook */
 		#endif
-		NULL, NULL);
+		NULL, NULL); /* assign hook, show hook */
 
 	DefineCustomStringVariable(
 		"pljava.classpath",
 		"Classpath used by the JVM",
-		NULL,
+		NULL, /* extended description */
 		&classpath,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			NULL,
+			NULL, /* boot value */
 		#endif
 		PGC_SUSET,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			0,
+			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL,
+			NULL, /* check hook */
 		#endif
-		NULL, NULL);
+		NULL, NULL); /* assign hook, show hook */
 
 	DefineCustomBoolVariable(
 		"pljava.debug",
 		"Stop the backend to attach a debugger",
-		NULL,
+		NULL, /* extended description */
 		&pljavaDebug,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			false,
+			false, /* boot value */
 		#endif
 		PGC_USERSET,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			0,
+			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL,
+			NULL, /* check hook */
 		#endif
-		NULL, NULL);
+		NULL, NULL); /* assign hook, show hook */
 
 	DefineCustomIntVariable(
 		"pljava.statement_cache_size",
 		"Size of the prepared statement MRU cache",
-		NULL,
+		NULL, /* extended description */
 		&statementCacheSize,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			11,
+			11,   /* boot value */
 		#endif
-		0, 512,
+		0, 512,   /* min, max values */
 		PGC_USERSET,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			0,
+			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL,
+			NULL, /* check hook */
 		#endif
-		NULL, NULL);
+		NULL, NULL); /* assign hook, show hook */
 
 	DefineCustomBoolVariable(
 		"pljava.release_lingering_savepoints",
 		"If true, lingering savepoints will be released on function exit. If false, the will be rolled back",
-		NULL,
+		NULL, /* extended description */
 		&pljavaReleaseLingeringSavepoints,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			false,
+			false, /* boot value */
 		#endif
 		PGC_USERSET,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			0,
+			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL,
+			NULL, /* check hook */
 		#endif
-		NULL, NULL);
+		NULL, NULL); /* assign hook, show hook */
 
 	DefineCustomStringVariable(
 		"pljava.implementors",
 		"Implementor names recognized in deployment descriptors",
-		NULL,
+		NULL, /* extended description */
 		&implementors,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
-			"postgresql",
+			"postgresql", /* boot value */
 		#endif
 		PGC_USERSET,
 		#if (PGSQL_MAJOR_VER > 8 || (PGSQL_MAJOR_VER == 8 && PGSQL_MINOR_VER > 3))
 			GUC_LIST_INPUT | GUC_LIST_QUOTE,
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL,
+			NULL, /* check hook */
 		#endif
-		NULL, NULL);
+		NULL, NULL); /* assign hook, show hook */
 
 	EmitWarningsOnPlaceholders("pljava");
 }
