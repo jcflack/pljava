@@ -158,7 +158,49 @@ static enum initstage initstage = IS_FORMLESS_VOID;
 static void *libjvm_handle;
 static bool jvmStartedAtLeastOnce = false;
 
+#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
+	static bool check_libjvm_location(
+		char **newval, void **extra, GucSource source);
+
+	static bool check_libjvm_location(
+		char **newval, void **extra, GucSource source)
+	{
+		if ( initstage < IS_CAND_JVMOPENED )
+			return true;
+		GUC_check_errmsg(
+			"too late to change \"pljava.libjvm_location\" setting");
+		GUC_check_errdetail(
+			"Changing the setting can have no effect after "
+			"PL/Java has found and opened the library it points to.");
+		GUC_check_errhint(
+			"To try a different value, exit this session and start a new one.");
+		return false;
+	}
+#endif
+
 static void initsequencer(enum initstage is, _Bool tolerant);
+
+static void assign_libjvm_location( const char *newval,
+#if PGSQL_MAJOR_VER < 9 || PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER == 0
+	bool doit, GucSource source);
+#else
+	void *extra);
+#endif
+
+
+
+static void assign_libjvm_location( const char *newval,
+#if PGSQL_MAJOR_VER < 9 || PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER == 0
+	bool doit, GucSource source)
+#else
+	void *extra)
+#endif
+{
+	libjvmlocation = (char *)newval;
+	if ( IS_FORMLESS_VOID < initstage && initstage < IS_CAND_JVMOPENED )
+		initsequencer( initstage, true); 
+}
+
 static void initsequencer(enum initstage is, _Bool tolerant)
 {
 	JVMOptList optList;
@@ -214,7 +256,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 			ereport(WARNING, (
 				errmsg("Java virtual machine not yet started"),
 				errdetail("%s", dle),
-				errhint("Is the file named in pljava.libjvm_location "
+				errhint("Is the file named in \"pljava.libjvm_location\" "
 						"the right one?")));
 			goto check_tolerant;
 		}
@@ -860,9 +902,10 @@ static void registerGUCOptions(void)
 			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL, /* check hook */
+			check_libjvm_location,
 		#endif
-		NULL, NULL); /* assign hook, show hook */
+		assign_libjvm_location,
+		NULL); /* show hook */
 
 	DefineCustomStringVariable(
 		"pljava.vmoptions",
