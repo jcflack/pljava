@@ -158,9 +158,16 @@ enum initstage
 static enum initstage initstage = IS_FORMLESS_VOID;
 static void *libjvm_handle;
 static bool jvmStartedAtLeastOnce = false;
+static bool alteredSettingsWereNeeded = false;
+
+static void initsequencer(enum initstage is, _Bool tolerant);
 
 #if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
 	static bool check_libjvm_location(
+		char **newval, void **extra, GucSource source);
+	static bool check_vmoptions(
+		char **newval, void **extra, GucSource source);
+	static bool check_classpath(
 		char **newval, void **extra, GucSource source);
 
 	static bool check_libjvm_location(
@@ -177,29 +184,80 @@ static bool jvmStartedAtLeastOnce = false;
 			"To try a different value, exit this session and start a new one.");
 		return false;
 	}
+
+	static bool check_vmoptions(
+		char **newval, void **extra, GucSource source)
+	{
+		if ( initstage < IS_JAVAVM_OPTLIST )
+			return true;
+		GUC_check_errmsg(
+			"too late to change \"pljava.vmoptions\" setting");
+		GUC_check_errdetail(
+			"Changing the setting can have no effect after "
+			"PL/Java has started the Java virtual machine.");
+		GUC_check_errhint(
+			"To try a different value, exit this session and start a new one.");
+		return false;
+	}
+
+	static bool check_classpath(
+		char **newval, void **extra, GucSource source)
+	{
+		if ( initstage < IS_JAVAVM_OPTLIST )
+			return true;
+		GUC_check_errmsg(
+			"too late to change \"pljava.classpath\" setting");
+		GUC_check_errdetail(
+			"Changing the setting has no effect after "
+			"PL/Java has started the Java virtual machine.");
+		GUC_check_errhint(
+			"To try a different value, exit this session and start a new one.");
+		return false;
+	}
 #endif
 
-static void initsequencer(enum initstage is, _Bool tolerant);
-
-static void assign_libjvm_location( const char *newval,
 #if PGSQL_MAJOR_VER < 9 || PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER == 0
-	bool doit, GucSource source);
+#define ASSIGNHOOK(name,type) \
+	static void \
+	CppConcat(assign_,name)(type newval, bool doit, GucSource source); \
+	static void \
+	CppConcat(assign_,name)(type newval, bool doit, GucSource source)
 #else
-	void *extra);
+#define ASSIGNHOOK(name,type) \
+	static void \
+	CppConcat(assign_,name)(type newval, void *extra); \
+	static void \
+	CppConcat(assign_,name)(type newval, void *extra)
 #endif
 
-
-
-static void assign_libjvm_location( const char *newval,
-#if PGSQL_MAJOR_VER < 9 || PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER == 0
-	bool doit, GucSource source)
-#else
-	void *extra)
-#endif
+ASSIGNHOOK(libjvm_location, const char *)
 {
 	libjvmlocation = (char *)newval;
 	if ( IS_FORMLESS_VOID < initstage && initstage < IS_CAND_JVMOPENED )
-		initsequencer( initstage, true); 
+	{
+		alteredSettingsWereNeeded = true;
+		initsequencer( initstage, true);
+	}
+}
+
+ASSIGNHOOK(vmoptions, const char *)
+{
+	vmoptions = (char *)newval;
+	if ( IS_FORMLESS_VOID < initstage && initstage < IS_JAVAVM_OPTLIST )
+	{
+		alteredSettingsWereNeeded = true;
+		initsequencer( initstage, true);
+	}
+}
+
+ASSIGNHOOK(classpath, const char *)
+{
+	classpath = (char *)newval;
+	if ( IS_FORMLESS_VOID < initstage && initstage < IS_JAVAVM_OPTLIST )
+	{
+		alteredSettingsWereNeeded = true;
+		initsequencer( initstage, true);
+	}
 }
 
 static void initsequencer(enum initstage is, _Bool tolerant)
@@ -333,39 +391,55 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 			initPLJavaClasses();
 			initJavaSession();
 			Invocation_popBootContext();
+			initstage = IS_COMPLETE;
 		}
 		PG_CATCH();
 		{
 			MemoryContextSwitchTo(ctx.upperContext); /* leave ErrorContext */
 			Invocation_popBootContext();
-			/* JVM initialization failed for some reason. Destroy
-			 * the VM if it exists. Perhaps the user will try
-			 * fixing the pljava.classpath and make a new attempt.
-			 */
-			_destroyJavaVM(0, 0); /* which undoes the sighandlers, btw */
 			initstage = IS_MISC_ONCE_DONE;
 			/* We can't stay here...
 			 */
 			if ( tolerant )
-			{
 				reLogWithChangedLevel(WARNING); /* so xact is not aborted */
-				PG_TRY_RETURN_VOID;
+			else
+			{
+				EmitErrorReport(); /* no more unwinding, just log it */
+				/* Seeing an ERROR emitted to the log, without leaving the
+				 * transaction aborted, would violate the principle of least
+				 * astonishment. But at check_tolerant below, another ERROR will
+				 * be thrown immediately, so the transaction effect will be as
+				 * expected and this ERROR will contribute information beyond
+				 * what is in the generic one thrown down there.
+				 */
+				FlushErrorState();
 			}
-			EmitErrorReport(); /* no more unwinding, just log it */
-			/* Seeing an ERROR emitted to the log, without leaving the
-			 * transaction aborted, would violate the principle of least
-			 * astonishment. But at check_tolerant below, another ERROR will be
-			 * thrown immediately, so the transaction effect will be as expected
-			 * and this ERROR will contribute information beyond what is in the
-			 * generic one thrown down there.
-			 */
-			FlushErrorState();
-			goto check_tolerant;
 		}
 		PG_END_TRY();
-		initstage = IS_COMPLETE;
+		if ( IS_COMPLETE != initstage )
+		{
+			/* JVM initialization failed for some reason. Destroy
+			 * the VM if it exists. Perhaps the user will try
+			 * fixing the pljava.classpath and make a new attempt.
+			 */
+			ereport(WARNING, (
+				errmsg("failed to load initial PL/Java classes"),
+				errhint("The most common reason is that \"pljava.classpath\" "
+					"needs to be set, naming the proper \"pljava.jar\" file.")
+					));
+			_destroyJavaVM(0, 0); /* which undoes the sighandlers, btw */
+			goto check_tolerant;
+		}
 
 	case IS_COMPLETE:
+		if ( alteredSettingsWereNeeded )
+			ereport(NOTICE, (
+				errmsg("PL/Java successfully started after adjusting settings"),
+				errhint("The settings that worked should be saved in the "
+					"\"%s\" file. For a reminder of what has been set, try: "
+					"SELECT name, setting FROM pg_settings WHERE name LIKE "
+					"'pljava.%%' AND source = 'session'",
+					PG_GETCONFIGOPTION("config_file"))));
 		return;
 
 	default:
@@ -1009,9 +1083,10 @@ static void registerGUCOptions(void)
 			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL, /* check hook */
+			check_vmoptions,
 		#endif
-		NULL, NULL); /* assign hook, show hook */
+		assign_vmoptions,
+		NULL); /* show hook */
 
 	DefineCustomStringVariable(
 		"pljava.classpath",
@@ -1026,9 +1101,10 @@ static void registerGUCOptions(void)
 			0,    /* flags */
 		#endif
 		#if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
-			NULL, /* check hook */
+			check_classpath,
 		#endif
-		NULL, NULL); /* assign hook, show hook */
+		assign_classpath,
+		NULL); /* show hook */
 
 	DefineCustomBoolVariable(
 		"pljava.debug",
