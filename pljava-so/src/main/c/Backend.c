@@ -543,6 +543,8 @@ static void reLogWithChangedLevel(int level)
 
 void _PG_init()
 {
+	extern void whassup();
+	whassup();
 	initsequencer( initstage, true);
 }
 

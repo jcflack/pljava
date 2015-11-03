@@ -13,6 +13,8 @@
 #include <executor/spi.h>
 #include <executor/tuptable.h>
 
+ #include <server/tcop/pquery.h>
+
 #include "org_postgresql_pljava_internal_Portal.h"
 #include "pljava/Backend.h"
 #include "pljava/Exception.h"
@@ -22,6 +24,25 @@
 #include "pljava/type/TupleDesc.h"
 #include "pljava/type/Portal.h"
 #include "pljava/type/String.h"
+
+void whassup()
+{
+	elog(INFO, "ActivePortal is %p", ActivePortal);
+	if ( NULL == ActivePortal ) return;
+	List *l = ActivePortal->stmts;
+	elog(INFO, "ActivePortal->stmts is %p", l);
+	if ( NULL == l ) return;
+	elog(INFO, "There are %d elements", list_length( l));
+	Node *ut = (Node *)linitial(l);
+	elog(INFO, "ut is %p", ut);
+	if ( NULL == ut ) return;
+	elog(INFO, "ut tag is %d", nodeTag(ut));
+	if ( T_LoadStmt != nodeTag(ut) ) return;
+	LoadStmt *ls = (LoadStmt *)ut;
+	elog(INFO, "filename is %p", ls->filename);
+	if ( NULL == ls->filename ) return;
+	elog(INFO, "filename is %s", ls->filename);
+}
 
 static jclass    s_Portal_class;
 static jmethodID s_Portal_init;
