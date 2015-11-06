@@ -32,6 +32,7 @@
 
 #include "org_postgresql_pljava_internal_Backend.h"
 #include "pljava/Invocation.h"
+#include "pljava/InstallHelper.h"
 #include "pljava/Function.h"
 #include "pljava/HashMap.h"
 #include "pljava/Exception.h"
@@ -432,6 +433,12 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		}
 
 	case IS_COMPLETE:
+		if ( NULL != pljavaLoadPath )
+			ereport(NOTICE, (
+				errmsg("PL/Java loaded from \"%s\"", pljavaLoadPath)));
+		if ( NULL != pljavaHandlerPath )
+			ereport(NOTICE, (
+				errmsg("PL/Java handler in \"%s\"", pljavaHandlerPath)));
 		if ( alteredSettingsWereNeeded )
 			ereport(NOTICE, (
 				errmsg("PL/Java successfully started after adjusting settings"),
@@ -475,7 +482,6 @@ check_tolerant:
 static void reLogWithChangedLevel(int level)
 {
 	ErrorData *edata = CopyErrorData();
-	ErrorData *newedata;
 	FlushErrorState();
 	int sqlstate = edata->sqlerrcode;
 	int category = ERRCODE_TO_CATEGORY(sqlstate);
@@ -543,8 +549,7 @@ static void reLogWithChangedLevel(int level)
 
 void _PG_init()
 {
-	extern void whassup();
-	whassup();
+	pljavaCheckLoadPath();
 	initsequencer( initstage, true);
 }
 
@@ -1223,6 +1228,7 @@ static Datum internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
 
 	if ( IS_COMPLETE != initstage )
 	{
+		pljavaCheckHandlerPath( trusted, fcinfo);
 		initsequencer( initstage, false);
 
 		/* Force initial setting
