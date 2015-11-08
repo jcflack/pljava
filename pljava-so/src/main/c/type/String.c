@@ -235,7 +235,8 @@ char* String_createNTS(jstring javaString)
 		if ( 0 == u8buf )
 			return result;
 		result = (char*)pg_do_encoding_conversion(
-			(unsigned char *)u8buf, strlen( u8buf), PG_UTF8, s_server_encoding);
+			(unsigned char *)u8buf, (int)strlen( u8buf),
+			PG_UTF8, s_server_encoding);
 		if ( result == u8buf )
 			result = pstrdup( result);
 		JNI_releaseStringUTFChars( javaString, u8buf);
