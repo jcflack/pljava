@@ -13,7 +13,9 @@
 #include <access/htup_details.h>
 #include <catalog/pg_language.h>
 #include <catalog/pg_proc.h>
+#include <commands/dbcommands.h>
 #include <commands/portalcmds.h>
+#include <miscadmin.h>
 #include <tcop/pquery.h>
 #include <utils/builtins.h>
 #include <utils/memutils.h>
@@ -24,6 +26,11 @@
 char const *pljavaLoadPath = NULL;
 
 char const *pljavaHandlerPath = NULL;
+
+char *pljavaDbNamePalloced()
+{
+	return get_database_name(MyDatabaseId);
+}
 
 void pljavaCheckLoadPath()
 {

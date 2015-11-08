@@ -171,10 +171,20 @@ static void initsequencer(enum initstage is, _Bool tolerant);
 	static bool check_classpath(
 		char **newval, void **extra, GucSource source);
 
+	/* Check hooks will always allow "setting" a value that is the same as
+	 * current; otherwise, it would be frustrating to have just found settings
+	 * that work, and be unable to save them with ALTER DATABASE SET ... because
+	 * the check hook is called for that too, and would say it is too late....
+	 */
+
 	static bool check_libjvm_location(
 		char **newval, void **extra, GucSource source)
 	{
 		if ( initstage < IS_CAND_JVMOPENED )
+			return true;
+		if ( vmoptions == *newval )
+			return true;
+		if ( libjvmlocation && *newval && 0 == strcmp(libjvmlocation, *newval) )
 			return true;
 		GUC_check_errmsg(
 			"too late to change \"pljava.libjvm_location\" setting");
@@ -191,6 +201,10 @@ static void initsequencer(enum initstage is, _Bool tolerant);
 	{
 		if ( initstage < IS_JAVAVM_OPTLIST )
 			return true;
+		if ( vmoptions == *newval )
+			return true;
+		if ( vmoptions && *newval && 0 == strcmp(vmoptions, *newval) )
+			return true;
 		GUC_check_errmsg(
 			"too late to change \"pljava.vmoptions\" setting");
 		GUC_check_errdetail(
@@ -205,6 +219,10 @@ static void initsequencer(enum initstage is, _Bool tolerant);
 		char **newval, void **extra, GucSource source)
 	{
 		if ( initstage < IS_JAVAVM_OPTLIST )
+			return true;
+		if ( classpath == *newval )
+			return true;
+		if ( classpath && *newval && 0 == strcmp(classpath, *newval) )
 			return true;
 		GUC_check_errmsg(
 			"too late to change \"pljava.classpath\" setting");
@@ -442,10 +460,12 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		if ( alteredSettingsWereNeeded )
 			ereport(NOTICE, (
 				errmsg("PL/Java successfully started after adjusting settings"),
-				errhint("The settings that worked should be saved in the "
-					"\"%s\" file. For a reminder of what has been set, try: "
+				errhint("The settings that worked should be saved (using "
+					"\"ALTER DATABASE %s SET ... TO ...\" or in the "
+					"\"%s\" file). For a reminder of what has been set, try: "
 					"SELECT name, setting FROM pg_settings WHERE name LIKE "
 					"'pljava.%%' AND source = 'session'",
+					pljavaDbNamePalloced(), /* palloc'd, but in ErrorContext */
 					PG_GETCONFIGOPTION("config_file"))));
 		return;
 
