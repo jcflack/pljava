@@ -25,7 +25,9 @@
 
 char const *pljavaLoadPath = NULL;
 
-char const *pljavaHandlerPath = NULL;
+Oid pljavaTrustedOid = InvalidOid;
+
+Oid pljavaUntrustedOid = InvalidOid;
 
 char *pljavaDbName()
 {
@@ -59,10 +61,10 @@ void pljavaCheckLoadPath()
 		(char const *)MemoryContextStrdup( TopMemoryContext, ls->filename);
 }
 
-void pljavaCheckHandlerPath(bool trusted, PG_FUNCTION_ARGS)
+char *pljavaFnOidToLibPath(Oid myOid)
 {
 	bool isnull;
-	Oid myOid = fcinfo->flinfo->fn_oid;
+	char *result;
 	HeapTuple myPT = SearchSysCache1(PROCOID, ObjectIdGetDatum(myOid));
 	if (!HeapTupleIsValid(myPT))
 		elog(ERROR, "cache lookup failed for function %u", myOid);
@@ -84,8 +86,8 @@ void pljavaCheckHandlerPath(bool trusted, PG_FUNCTION_ARGS)
 	if ( isnull )
 		elog(ERROR, "null probin for C function %u", handlerOid);
 	char *probinstring = TextDatumGetCString(probinattr);
-	pljavaHandlerPath =
-		(char const *)MemoryContextStrdup( TopMemoryContext, probinstring);
+	result = pstrdup( probinstring);
 	pfree(probinstring);
 	ReleaseSysCache(handlerPT);
+	return result;
 }

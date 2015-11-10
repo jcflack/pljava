@@ -30,15 +30,13 @@ extern void pljavaCheckLoadPath();
 extern char const *pljavaLoadPath;
 
 /*
- * Another way of getting the library path: if invoked by the fmgr, trace the
- * function oid via the language and handler oids back to the handler library.
- * This also wouldn't have to be here if PG passed library names to _PG_init.
- * The result, if found, is palloc'd in TopMemoryContext and stored in
- * pljavaHandlerPath.
+ * Another way of getting the library path: if invoked by the fmgr before
+ * initialization is complete, save the last function Oid seen (trusted or
+ * untrusted) ... can be used later to get the library path if needed.
  */
-extern void pljavaCheckHandlerPath(bool trusted, PG_FUNCTION_ARGS);
+extern char *pljavaFnOidToLibPath(Oid fn);
 
-extern char const *pljavaHandlerPath;
+extern Oid pljavaTrustedOid, pljavaUntrustedOid;
 
 /*
  * Return the name of the current database, from MyProcPort ... don't free it.

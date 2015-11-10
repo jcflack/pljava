@@ -279,6 +279,39 @@ ASSIGNHOOK(classpath, const char *)
 	}
 }
 
+/*
+ * There are a few ways to arrive in the initsequencer.
+ * 1. From _PG_init (called exactly once when the library is loaded for ANY
+ *    reason).
+ *    1a. Because of the command LOAD 'libraryname';
+ *        This case can be distinguished because _PG_init will have found the
+ *        LOAD command and saved the 'libraryname' in pljavaLoadPath.
+ *    1b. Because of a CREATE FUNCTION naming this library. pljavaLoadPath will
+ *        be NULL.
+ *    1c. By the first actual use of a PL/Java function, causing this library
+ *        to be loaded. pljavaLoadPath will be NULL. The called function's Oid
+ *        will be available to the call handler once we return from _PG_init,
+ *        but it isn't (easily) available here.
+ * 2. From the call handler, if initialization isn't complete yet. That can only
+ *    mean something failed in the earlier call to _PG_init, and whatever it was
+ *    is highly likely to fail again. That may lead to the untidyness of
+ *    duplicated diagnostic messages, but for now I like the belt-and-suspenders
+ *    approach of making sure the init sequence gets as many chances as possible
+ *    to succeed.
+ * 3. From a GUC assign hook, if the user has updated a setting that might allow
+ *    initialization to succeed. It resumes from where it left off.
+ *
+ * In all cases, the sequence must progress as far as starting the VM and
+ * initializing the PL/Java classes. In all cases except 1a, that's enough,
+ * assuming the language handlers and schema have all been set up already (or,
+ * in case 1b, the user is intent on setting them up explicitly).
+ *
+ * In case 1a, we can go ahead and test for, and create, the schema, functions,
+ * and language entries as needed, using pljavaLoadPath as the library path
+ * if creating the language handler functions. One-stop shopping. (The presence
+ * of pljavaLoadPath in any of the other cases, such as resumption by an assign
+ * hook, indicates it is really a continuation of case 1a.)
+ */
 static void initsequencer(enum initstage is, _Bool tolerant)
 {
 	JVMOptList optList;
@@ -454,9 +487,6 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		if ( NULL != pljavaLoadPath )
 			ereport(NOTICE, (
 				errmsg("PL/Java loaded from \"%s\"", pljavaLoadPath)));
-		if ( NULL != pljavaHandlerPath )
-			ereport(NOTICE, (
-				errmsg("PL/Java handler in \"%s\"", pljavaHandlerPath)));
 		if ( alteredSettingsWereNeeded )
 			ereport(NOTICE, (
 				errmsg("PL/Java successfully started after adjusting settings"),
@@ -1248,7 +1278,14 @@ static Datum internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
 
 	if ( IS_COMPLETE != initstage )
 	{
-		pljavaCheckHandlerPath( trusted, fcinfo);
+		/*
+		 * Just in case it could be helpful in offering diagnostics later, hang
+		 * on to an Oid that is known to refer to PL/Java (because it got here).
+		 * It's cheap, and can be followed back to the right language and
+		 * handler function entries later if needed.
+		 */
+		*(trusted ? &pljavaTrustedOid : &pljavaUntrustedOid)
+			= fcinfo->flinfo->fn_oid;
 		initsequencer( initstage, false);
 
 		/* Force initial setting
