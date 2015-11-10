@@ -22,6 +22,10 @@
 #include <utils/syscache.h>
 
 #include "pljava/InstallHelper.h"
+#include "pljava/JNICalls.h"
+
+static jclass s_InstallHelper_class;
+static jmethodID s_InstallHelper_hello;
 
 char const *pljavaLoadPath = NULL;
 
@@ -90,4 +94,23 @@ char *pljavaFnOidToLibPath(Oid myOid)
 	pfree(probinstring);
 	ReleaseSysCache(handlerPT);
 	return result;
+}
+
+char *InstallHelper_hello()
+{
+	jstring nativeVer = String_createJavaStringFromNTS("0.0.2-SNAPSHOT");
+	jstring hi = JNI_callStaticObjectMethod(
+		s_InstallHelper_class, s_InstallHelper_hello, nativeVer);
+	JNI_deleteLocalRef(nativeVer);
+	char *hiC = String_createNTS(hi);
+	JNI_deleteLocalRef(hi);
+	return hiC;
+}
+
+void InstallHelper_initialize()
+{
+	s_InstallHelper_class = (jclass)JNI_newGlobalRef(PgObject_getJavaClass(
+		"org/postgresql/pljava/internal/InstallHelper"));
+	s_InstallHelper_hello = PgObject_getStaticJavaMethod(s_InstallHelper_class,
+		"hello", "(Ljava/lang/String;)Ljava/lang/String;");
 }

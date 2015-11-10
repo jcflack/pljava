@@ -317,6 +317,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 	JVMOptList optList;
 	Invocation ctx;
 	jint JNIresult;
+	char *greeting;
 
 	switch (is)
 	{
@@ -484,9 +485,10 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		}
 
 	case IS_COMPLETE:
-		if ( NULL != pljavaLoadPath )
-			ereport(NOTICE, (
-				errmsg("PL/Java loaded from \"%s\"", pljavaLoadPath)));
+		greeting = InstallHelper_hello();
+		ereport(NULL != pljavaLoadPath ? NOTICE : DEBUG1, (
+				errmsg("PL/Java loaded"),
+				errdetail_internal(greeting)));
 		if ( alteredSettingsWereNeeded )
 			ereport(NOTICE, (
 				errmsg("PL/Java successfully started after adjusting settings"),
@@ -665,6 +667,8 @@ static void initPLJavaClasses(void)
 	SQLOutputToChunk_initialize();
 	SQLInputFromTuple_initialize();
 	SQLOutputToTuple_initialize();
+
+	InstallHelper_initialize();
 
 	s_setTrusted = PgObject_getStaticJavaMethod(s_Backend_class, "setTrusted", "(Z)V");
 }
