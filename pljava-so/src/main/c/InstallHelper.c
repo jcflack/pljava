@@ -22,7 +22,10 @@
 #include <utils/syscache.h>
 
 #include "pljava/InstallHelper.h"
+#include "pljava/Invocation.h"
 #include "pljava/JNICalls.h"
+#include "pljava/PgObject.h"
+#include "pljava/type/String.h"
 
 static jclass s_InstallHelper_class;
 static jmethodID s_InstallHelper_hello;
@@ -98,12 +101,24 @@ char *pljavaFnOidToLibPath(Oid myOid)
 
 char *InstallHelper_hello()
 {
+	Invocation ctx;
+	Invocation_pushBootContext(&ctx);
 	jstring nativeVer = String_createJavaStringFromNTS("0.0.2-SNAPSHOT");
+	jstring user = String_createJavaStringFromNTS(MyProcPort->user_name);
+	jstring ddir = String_createJavaStringFromNTS(DataDir);
+	jstring ldir = String_createJavaStringFromNTS(pkglib_path);
+
 	jstring hi = JNI_callStaticObjectMethod(
-		s_InstallHelper_class, s_InstallHelper_hello, nativeVer);
+		s_InstallHelper_class, s_InstallHelper_hello,
+		nativeVer, user, ddir, ldir);
+
 	JNI_deleteLocalRef(nativeVer);
+	JNI_deleteLocalRef(user);
+	JNI_deleteLocalRef(ddir);
+	JNI_deleteLocalRef(ldir);
 	char *hiC = String_createNTS(hi);
 	JNI_deleteLocalRef(hi);
+	Invocation_popBootContext();
 	return hiC;
 }
 
@@ -112,5 +127,6 @@ void InstallHelper_initialize()
 	s_InstallHelper_class = (jclass)JNI_newGlobalRef(PgObject_getJavaClass(
 		"org/postgresql/pljava/internal/InstallHelper"));
 	s_InstallHelper_hello = PgObject_getStaticJavaMethod(s_InstallHelper_class,
-		"hello", "(Ljava/lang/String;)Ljava/lang/String;");
+		"hello",
+		"(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
 }

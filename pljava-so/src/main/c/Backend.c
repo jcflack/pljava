@@ -489,6 +489,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		ereport(NULL != pljavaLoadPath ? NOTICE : DEBUG1, (
 				errmsg("PL/Java loaded"),
 				errdetail_internal(greeting)));
+		pfree(greeting);
 		if ( alteredSettingsWereNeeded )
 			ereport(NOTICE, (
 				errmsg("PL/Java successfully started after adjusting settings"),
