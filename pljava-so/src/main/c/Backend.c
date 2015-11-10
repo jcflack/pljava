@@ -465,7 +465,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 					"\"%s\" file). For a reminder of what has been set, try: "
 					"SELECT name, setting FROM pg_settings WHERE name LIKE "
 					"'pljava.%%' AND source = 'session'",
-					pljavaDbNamePalloced(), /* palloc'd, but in ErrorContext */
+					pljavaDbName(),
 					PG_GETCONFIGOPTION("config_file"))));
 		return;
 

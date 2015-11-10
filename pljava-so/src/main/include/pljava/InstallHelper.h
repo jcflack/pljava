@@ -41,9 +41,6 @@ extern void pljavaCheckHandlerPath(bool trusted, PG_FUNCTION_ARGS);
 extern char const *pljavaHandlerPath;
 
 /*
- * Return the name of the current database, palloc'd in the current memory
- * context. In the only intended use (supplying the database name in an
- * ereport hint), that's the ErrorContext, so there is no real need to be fussy
- * about freeing the name.
+ * Return the name of the current database, from MyProcPort ... don't free it.
  */
-extern char *pljavaDbNamePalloced();
+extern char *pljavaDbName();
