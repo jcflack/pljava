@@ -86,6 +86,7 @@ public class InstallHelper
 
 			schema(c, s);
 			handlers(c, s, module_pathname);
+			languages(c, s);
 		}
 		finally
 		{
@@ -151,6 +152,38 @@ public class InstallHelper
 		{
 			c.rollback(p);
 			if ( ! "42723".equals(sqle.getSQLState()) )
+				throw sqle;
+		}
+	}
+
+	private static void languages( Connection c, Statement s)
+	throws SQLException
+	{
+		Savepoint p = null;
+		try
+		{
+			p = c.setSavepoint();
+			s.execute(
+				"CREATE TRUSTED LANGUAGE java HANDLER sqlj.java_call_handler");
+			c.releaseSavepoint(p);
+		}
+		catch ( SQLException sqle )
+		{
+			c.rollback(p);
+			if ( ! "42710".equals(sqle.getSQLState()) )
+				throw sqle;
+		}
+		try
+		{
+			p = c.setSavepoint();
+			s.execute(
+				"CREATE LANGUAGE javaU HANDLER sqlj.javau_call_handler");
+			c.releaseSavepoint(p);
+		}
+		catch ( SQLException sqle )
+		{
+			c.rollback(p);
+			if ( ! "42710".equals(sqle.getSQLState()) )
 				throw sqle;
 		}
 	}
