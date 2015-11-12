@@ -11,6 +11,15 @@
  */
 package org.postgresql.pljava.internal;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Savepoint;
+import java.sql.Statement;
+
+import org.postgresql.pljava.jdbc.SQLUtils;
+
 /**
  * Group of methods intended to streamline the PL/Java installation/startup
  * experience.
@@ -63,5 +72,43 @@ public class InstallHelper
 			sb.append( ", ").append( vmInfo);
 		sb.append( ')');
 		return sb.toString();
+	}
+
+	public static void groundwork( String module_pathname)
+	throws SQLException
+	{
+		Connection c = null;
+		Statement s = null;
+		try
+		{
+			c = SQLUtils.getDefaultConnection();
+			s = c.createStatement();
+
+			schema(c, s);
+		}
+		finally
+		{
+			SQLUtils.close(s);
+			SQLUtils.close(c);
+		}
+	}
+
+	private static void schema( Connection c, Statement s)
+	throws SQLException
+	{
+		Savepoint p = null;
+		try
+		{
+			p = c.setSavepoint();
+			s.execute("CREATE SCHEMA sqlj");
+			s.execute("GRANT USAGE ON SCHEMA sqlj TO public");
+			c.releaseSavepoint(p);
+		}
+		catch ( SQLException sqle )
+		{
+			if ( ! "42P06".equals(sqle.getSQLState()) )
+				throw sqle;
+			c.rollback(p); // schema exists already, no problem
+		}
 	}
 }

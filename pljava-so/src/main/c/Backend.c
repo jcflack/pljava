@@ -153,6 +153,7 @@ enum initstage
 	IS_JAVAVM_OPTLIST,
 	IS_JAVAVM_STARTED,
 	IS_SIGHANDLERS,
+	IS_PLJAVA_FOUND,
 	IS_COMPLETE
 };
 
@@ -444,7 +445,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 			initPLJavaClasses();
 			initJavaSession();
 			Invocation_popBootContext();
-			initstage = IS_COMPLETE;
+			initstage = IS_PLJAVA_FOUND;
 		}
 		PG_CATCH();
 		{
@@ -469,7 +470,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 			}
 		}
 		PG_END_TRY();
-		if ( IS_COMPLETE != initstage )
+		if ( IS_PLJAVA_FOUND != initstage )
 		{
 			/* JVM initialization failed for some reason. Destroy
 			 * the VM if it exists. Perhaps the user will try
@@ -484,12 +485,17 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 			goto check_tolerant;
 		}
 
-	case IS_COMPLETE:
+	case IS_PLJAVA_FOUND:
 		greeting = InstallHelper_hello();
 		ereport(NULL != pljavaLoadPath ? NOTICE : DEBUG1, (
 				errmsg("PL/Java loaded"),
 				errdetail_internal(greeting)));
 		pfree(greeting);
+		if ( NULL != pljavaLoadPath )
+			InstallHelper_groundwork(); /* sqlj schema, language handlers, ...*/
+		initstage = IS_COMPLETE;
+
+	case IS_COMPLETE:
 		if ( alteredSettingsWereNeeded )
 			ereport(NOTICE, (
 				errmsg("PL/Java successfully started after adjusting settings"),

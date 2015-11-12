@@ -22,6 +22,7 @@
 #include <utils/syscache.h>
 
 #include "pljava/InstallHelper.h"
+#include "pljava/Function.h"
 #include "pljava/Invocation.h"
 #include "pljava/JNICalls.h"
 #include "pljava/PgObject.h"
@@ -39,6 +40,7 @@
 
 static jclass s_InstallHelper_class;
 static jmethodID s_InstallHelper_hello;
+static jmethodID s_InstallHelper_groundwork;
 
 char const *pljavaLoadPath = NULL;
 
@@ -139,6 +141,26 @@ char *InstallHelper_hello()
 	return hiC;
 }
 
+void InstallHelper_groundwork()
+{
+	Invocation ctx;
+	Invocation_pushInvocation(&ctx, false);
+	ctx.function = Function_INIT_WRITER;
+	PG_TRY();
+	{
+		jstring pljlp = String_createJavaStringFromNTS(pljavaLoadPath);
+		JNI_callStaticObjectMethod(
+			s_InstallHelper_class, s_InstallHelper_groundwork, pljlp);
+		Invocation_popInvocation(false);
+	}
+	PG_CATCH();
+	{
+		Invocation_popInvocation(true);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
 void InstallHelper_initialize()
 {
 	s_InstallHelper_class = (jclass)JNI_newGlobalRef(PgObject_getJavaClass(
@@ -148,4 +170,6 @@ void InstallHelper_initialize()
 		"(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
 		"Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)"
 		"Ljava/lang/String;");
+	s_InstallHelper_groundwork = PgObject_getStaticJavaMethod(
+		s_InstallHelper_class, "groundwork", "(Ljava/lang/String;)V");
 }
