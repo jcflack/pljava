@@ -177,6 +177,7 @@
 							<define>PGSQL_MAJOR_VER=${PGSQL_MAJOR_VER}</define>
 							<define>PGSQL_MINOR_VER=${PGSQL_MINOR_VER}</define>
 							<define>PGSQL_PATCH_VER=${PGSQL_PATCH_VER}</define>
+							<define>PLJAVA_SO_VERSION=${project.version}</define>
 						</defines>
 						<includePaths>
 							<!-- TODO: hardcoded paths -->

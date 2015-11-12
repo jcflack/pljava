@@ -19,17 +19,26 @@ package org.postgresql.pljava.internal;
  */
 public class InstallHelper
 {
+	private static void setPropertyIfNull( String property, String value)
+	{
+		if ( null == System.getProperty( property) )
+			System.setProperty( property, value);
+	}
+
 	public static String hello(
-		String nativeVer, String user, String datadir, String libdir)
+		String nativeVer, String user,
+		String datadir, String libdir, String sharedir, String etcdir)
 	{
 		String implVersion =
 			InstallHelper.class.getPackage().getImplementationVersion();
 		System.setProperty( "user.name", user);
-		System.setProperty( "org.postgresql.datadir", datadir);
-		System.setProperty( "org.postgresql.libdir", libdir);
-		System.setProperty( "org.postgresql.pljava.version", implVersion);
-		System.setProperty( "org.postgresql.pljava.native.version", nativeVer);
-		System.setProperty( "org.postgresql.version",
+		setPropertyIfNull( "org.postgresql.datadir", datadir);
+		setPropertyIfNull( "org.postgresql.libdir", libdir);
+		setPropertyIfNull( "org.postgresql.sharedir", sharedir);
+		setPropertyIfNull( "org.postgresql.etcdir", etcdir);
+		setPropertyIfNull( "org.postgresql.pljava.version", implVersion);
+		setPropertyIfNull( "org.postgresql.pljava.native.version", nativeVer);
+		setPropertyIfNull( "org.postgresql.version",
 			Backend.getConfigOption( "server_version"));
 
 		String jreName = System.getProperty( "java.runtime.name");
