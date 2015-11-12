@@ -13,12 +13,12 @@ package org.postgresql.pljava.internal;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Statement;
 
 import org.postgresql.pljava.jdbc.SQLUtils;
+import static org.postgresql.pljava.sqlgen.DDRWriter.eQuote;
 
 /**
  * Group of methods intended to streamline the PL/Java installation/startup
@@ -85,6 +85,7 @@ public class InstallHelper
 			s = c.createStatement();
 
 			schema(c, s);
+			handlers(c, s, module_pathname);
 		}
 		finally
 		{
@@ -106,9 +107,51 @@ public class InstallHelper
 		}
 		catch ( SQLException sqle )
 		{
+			c.rollback(p);
 			if ( ! "42P06".equals(sqle.getSQLState()) )
 				throw sqle;
-			c.rollback(p); // schema exists already, no problem
+		}
+	}
+
+	private static void handlers( Connection c, Statement s, String module_path)
+	throws SQLException
+	{
+		Savepoint p = null;
+		try
+		{
+			p = c.setSavepoint();
+			s.execute(
+				"CREATE FUNCTION sqlj.java_call_handler()" +
+				" RETURNS language_handler" +
+				" AS " + eQuote(module_path) +
+				" LANGUAGE C");
+			s.execute("REVOKE ALL PRIVILEGES" +
+				" ON FUNCTION sqlj.java_call_handler() FROM public");
+			c.releaseSavepoint(p);
+		}
+		catch ( SQLException sqle )
+		{
+			c.rollback(p);
+			if ( ! "42723".equals(sqle.getSQLState()) )
+				throw sqle;
+		}
+		try
+		{
+			p = c.setSavepoint();
+			s.execute(
+				"CREATE FUNCTION sqlj.javau_call_handler()" +
+				" RETURNS language_handler" +
+				" AS " + eQuote(module_path) +
+				" LANGUAGE C");
+			s.execute("REVOKE ALL PRIVILEGES" +
+				" ON FUNCTION sqlj.javau_call_handler() FROM public");
+			c.releaseSavepoint(p);
+		}
+		catch ( SQLException sqle )
+		{
+			c.rollback(p);
+			if ( ! "42723".equals(sqle.getSQLState()) )
+				throw sqle;
 		}
 	}
 }

@@ -608,6 +608,8 @@ static void reLogWithChangedLevel(int level)
 
 void _PG_init()
 {
+	if ( IS_PLJAVA_FOUND == initstage )
+		return; /* creating handler functions will cause recursive call */
 	pljavaCheckLoadPath();
 	initsequencer( initstage, true);
 }
