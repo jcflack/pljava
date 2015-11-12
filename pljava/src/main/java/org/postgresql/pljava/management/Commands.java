@@ -43,6 +43,11 @@ import org.postgresql.pljava.internal.Oid;
 import org.postgresql.pljava.jdbc.SQLUtils;
 import org.postgresql.pljava.sqlj.Loader;
 
+import org.postgresql.pljava.annotation.Function;
+import org.postgresql.pljava.annotation.SQLAction;
+import org.postgresql.pljava.annotation.SQLType;
+import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
+
 /**
  * This methods of this class are implementations of SQLJ commands.
  * <h1>SQLJ functions</h1>
@@ -231,6 +236,53 @@ import org.postgresql.pljava.sqlj.Loader;
  * 
  * @author Thomas Hallgren
  */
+@SQLAction(install={
+"	CREATE TABLE sqlj.jar_repository(" +
+"		jarId       SERIAL PRIMARY KEY," +
+"		jarName     VARCHAR(100) UNIQUE NOT NULL," +
+"		jarOrigin   VARCHAR(500) NOT NULL," +
+"		jarOwner    NAME NOT NULL," +
+"		jarManifest TEXT" +
+"	)",
+"	GRANT SELECT ON sqlj.jar_repository TO public",
+
+"	CREATE TABLE sqlj.jar_entry(" +
+"		entryId     SERIAL PRIMARY KEY," +
+"		entryName   VARCHAR(200) NOT NULL," +
+"		jarId       INT NOT NULL" +
+"					REFERENCES sqlj.jar_repository ON DELETE CASCADE," +
+"		entryImage  BYTEA NOT NULL," +
+"		UNIQUE(jarId, entryName)" +
+"	)",
+"	GRANT SELECT ON sqlj.jar_entry TO public",
+
+"	CREATE TABLE sqlj.jar_descriptor(" +
+"		jarId       INT REFERENCES sqlj.jar_repository ON DELETE CASCADE," +
+"		ordinal     INT2," +
+"		PRIMARY KEY (jarId, ordinal)," +
+"		entryId     INT NOT NULL REFERENCES sqlj.jar_entry ON DELETE CASCADE" +
+"	)",
+"	GRANT SELECT ON sqlj.jar_descriptor TO public",
+
+"	CREATE TABLE sqlj.classpath_entry(" +
+"		schemaName  VARCHAR(30) NOT NULL," +
+"		ordinal     INT2 NOT NULL," +
+"		jarId       INT NOT NULL" +
+"					REFERENCES sqlj.jar_repository ON DELETE CASCADE," +
+"		PRIMARY KEY(schemaName, ordinal)" +
+"	)",
+"	GRANT SELECT ON sqlj.classpath_entry TO public",
+
+"	CREATE TABLE sqlj.typemap_entry(" +
+"		mapId       SERIAL PRIMARY KEY," +
+"		javaName    VARCHAR(200) NOT NULL," +
+"		sqlName     NAME NOT NULL" +
+"	)",
+"	GRANT SELECT ON sqlj.typemap_entry TO public"
+}, remove={
+"	DROP TABLE sqlj.typemap_entry",
+"	DROP TABLE sqlj.jar_repository CASCADE"
+})
 public class Commands
 {
 	private final static Logger s_logger = Logger.getLogger(Commands.class
@@ -430,6 +482,7 @@ public class Commands
 	 *            the classpath in effect for the current schema
 	 * @throws SQLException
 	 */
+	@Function(schema="sqlj", name="add_type_mapping", security=DEFINER)
 	public static void addTypeMapping(String sqlTypeName, String javaClassName)
 	throws SQLException
 	{
@@ -471,6 +524,7 @@ public class Commands
 	 *            <code>search_path</code>.
 	 * @throws SQLException
 	 */
+	@Function(schema="sqlj", name="drop_type_mapping", security=DEFINER)
 	public static void dropTypeMapping(String sqlTypeName) throws SQLException
 	{
 		PreparedStatement stmt = null;
@@ -499,6 +553,7 @@ public class Commands
 	 *         no classpath.
 	 * @throws SQLException
 	 */
+	@Function(schema="sqlj", name="get_classpath", security=DEFINER)
 	public static String getClassPath(String schemaName) throws SQLException
 	{
 		ResultSet rs = null;
@@ -570,7 +625,9 @@ public class Commands
 	 *             system.
 	 * @see #setClassPath
 	 */
-	public static void installJar(byte[] image, String jarName, boolean deploy)
+	@Function(schema="sqlj", name="install_jar", security=DEFINER)
+	public static void installJar(
+		@SQLType("bytea") byte[] image, String jarName, boolean deploy)
 	throws SQLException
 	{
 		installJar("streamed byte image", jarName, deploy, image);
@@ -591,6 +648,7 @@ public class Commands
 	 *             system.
 	 * @see #setClassPath
 	 */
+	@Function(schema="sqlj", name="install_jar", security=DEFINER)
 	public static void installJar(String urlString, String jarName,
 		boolean deploy) throws SQLException
 	{
@@ -608,6 +666,7 @@ public class Commands
 	 *            descriptor of the jar.
 	 * @throws SQLException if the named jar cannot be found in the repository.
 	 */
+	@Function(schema="sqlj", name="remove_jar", security=DEFINER)
 	public static void removeJar(String jarName, boolean undeploy)
 	throws SQLException
 	{
@@ -656,7 +715,9 @@ public class Commands
 	 *            deployment descriptor of the new jar.
 	 * @throws SQLException if the named jar cannot be found in the repository.
 	 */
-	public static void replaceJar(byte[] jarImage, String jarName,
+	@Function(schema="sqlj", name="replace_jar", security=DEFINER)
+	public static void replaceJar(
+		@SQLType("bytea") byte[] jarImage, String jarName,
 		boolean redeploy) throws SQLException
 	{
 		replaceJar("streamed byte image", jarName, redeploy, jarImage);
@@ -674,6 +735,7 @@ public class Commands
 	 *            deployment descriptor of the new jar.
 	 * @throws SQLException if the named jar cannot be found in the repository.
 	 */
+	@Function(schema="sqlj", name="replace_jar", security=DEFINER)
 	public static void replaceJar(String urlString, String jarName,
 		boolean redeploy) throws SQLException
 	{
@@ -693,6 +755,7 @@ public class Commands
 	 *             if one or several names of the path denotes a nonexistant jar
 	 *             file.
 	 */
+	@Function(schema="sqlj", name="set_classpath", security=DEFINER)
 	public static void setClassPath(String schemaName, String path)
 	throws SQLException
 	{
