@@ -11,13 +11,17 @@
  */
 package org.postgresql.pljava.internal;
 
+import java.io.InputStream;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Statement;
+import java.text.ParseException;
+import java.util.Scanner;
 
 import org.postgresql.pljava.jdbc.SQLUtils;
+import org.postgresql.pljava.management.SQLDeploymentDescriptor;
 import static org.postgresql.pljava.sqlgen.DDRWriter.eQuote;
 
 /**
@@ -75,7 +79,7 @@ public class InstallHelper
 	}
 
 	public static void groundwork( String module_pathname)
-	throws SQLException
+	throws SQLException, ParseException
 	{
 		Connection c = null;
 		Statement s = null;
@@ -87,6 +91,7 @@ public class InstallHelper
 			schema(c, s);
 			handlers(c, s, module_pathname);
 			languages(c, s);
+			deployment(c, s);
 		}
 		finally
 		{
@@ -186,5 +191,14 @@ public class InstallHelper
 			if ( ! "42710".equals(sqle.getSQLState()) )
 				throw sqle;
 		}
+	}
+
+	private static void deployment( Connection c, Statement s)
+	throws SQLException, ParseException
+	{
+		InputStream is = InstallHelper.class.getResourceAsStream("/pljava.ddr");
+		String raw = new Scanner(is, "utf-8").useDelimiter("\\A").next();
+		SQLDeploymentDescriptor sdd = new SQLDeploymentDescriptor(raw);
+		sdd.install(c);
 	}
 }
