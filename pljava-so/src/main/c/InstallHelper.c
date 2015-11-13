@@ -119,7 +119,9 @@ char *InstallHelper_hello()
 	jstring nativeVer = String_createJavaStringFromNTS(SO_VERSION_STRING);
 	jstring user = String_createJavaStringFromNTS(MyProcPort->user_name);
 	jstring ddir = String_createJavaStringFromNTS(DataDir);
-	jstring ldir = String_createJavaStringFromNTS(pkglib_path);
+
+	get_pkglib_path(my_exec_path, pathbuf);
+	jstring ldir = String_createJavaStringFromNTS(pathbuf);
 
 	get_share_path(my_exec_path, pathbuf);
 	jstring sdir = String_createJavaStringFromNTS(pathbuf);
