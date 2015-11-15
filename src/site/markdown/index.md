@@ -58,7 +58,7 @@ the plaform) and a JAR file. PostgreSQL must be configured to know where these
 are, in addition to the native library for the Java runtime itself. The
 [installation guide][iguide] has details.
 
-[build]: https://github.com/tada/pljava/wiki/Building-pl-java
+[build]: build/build.html
 
 ## Moving PL/Java forward
 
