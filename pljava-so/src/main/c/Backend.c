@@ -126,7 +126,7 @@ typedef struct {
 } JVMOptList;
 
 static void registerGUCOptions(void);
-static jboolean initializeJavaVM(JVMOptList*);
+static jint initializeJavaVM(JVMOptList*);
 static void JVMOptList_init(JVMOptList*);
 static void JVMOptList_delete(JVMOptList*);
 static void JVMOptList_add(JVMOptList*, const char*, void*, bool);
@@ -162,7 +162,7 @@ static void *libjvm_handle;
 static bool jvmStartedAtLeastOnce = false;
 static bool alteredSettingsWereNeeded = false;
 
-static void initsequencer(enum initstage is, _Bool tolerant);
+static void initsequencer(enum initstage is, bool tolerant);
 
 #if (PGSQL_MAJOR_VER > 9 || (PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER > 0))
 	static bool check_libjvm_location(
@@ -313,7 +313,7 @@ ASSIGNHOOK(classpath, const char *)
  * of pljavaLoadPath in any of the other cases, such as resumption by an assign
  * hook, indicates it is really a continuation of case 1a.)
  */
-static void initsequencer(enum initstage is, _Bool tolerant)
+static void initsequencer(enum initstage is, bool tolerant)
 {
 	JVMOptList optList;
 	Invocation ctx;
@@ -353,7 +353,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 
 	case IS_CAND_JVMOPENED:
 		pljava_createvm =
-			(jint JNICALL (*)(JavaVM **, void **, void *))
+			(jint (JNICALL *)(JavaVM **, void **, void *))
 			pg_dlsym(libjvm_handle, "JNI_CreateJavaVM");
 		if ( NULL == pljava_createvm )
 		{
@@ -489,7 +489,7 @@ static void initsequencer(enum initstage is, _Bool tolerant)
 		greeting = InstallHelper_hello();
 		ereport(NULL != pljavaLoadPath ? NOTICE : DEBUG1, (
 				errmsg("PL/Java loaded"),
-				errdetail_internal(greeting)));
+				errdetail_internal("%s", greeting)));
 		pfree(greeting);
 		if ( NULL != pljavaLoadPath )
 			InstallHelper_groundwork(); /* sqlj schema, language handlers, ...*/
@@ -1090,9 +1090,9 @@ static void checkIntTimeType(void)
 	elog(DEBUG1, integerDateTimes ? "Using integer_datetimes" : "Not using integer_datetimes");
 }
 
-static jboolean initializeJavaVM(JVMOptList *optList)
+static jint initializeJavaVM(JVMOptList *optList)
 {
-	jboolean jstat;
+	jint jstat;
 	JavaVMInitArgs vm_args;
 
 	if(pljavaDebug)

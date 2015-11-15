@@ -230,8 +230,10 @@ char* String_createNTS(jstring javaString)
 
 	if ( uninitialized )
 	{
+		const char* u8buf;
+
 		s_server_encoding = GetDatabaseEncoding();
-		const char* u8buf = JNI_getStringUTFChars( javaString, NULL);
+		u8buf = JNI_getStringUTFChars( javaString, NULL);
 		if ( 0 == u8buf )
 			return result;
 		result = (char*)pg_do_encoding_conversion(
