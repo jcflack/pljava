@@ -17,7 +17,7 @@ contributing to the project. More basic information on how to [set up][iguide]
 or [use][uguide] PL/Java can be found on the [wiki][]. The following sections
 offer very brief summaries.
 
-[iguide]: https://github.com/tada/pljava/wiki/Installation-guide
+[iguide]: install/install.html
 [uguide]: https://github.com/tada/pljava/wiki/User-guide
 
 ## Use of PL/Java, in a nutshell
