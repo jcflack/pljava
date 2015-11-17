@@ -67,7 +67,7 @@ sources.
 ## The build
 
 To start the build, your current directory should be the one the sources were
-checked out into (looking around, there should be a `pom.xml` file there, and
+checked out into. Looking around, there should be a `pom.xml` file there, and
 several subdirectories `pljava`, `pljava-api`, `pljava-so`, etc.
 
 A successful `mvn clean package` should produce output like this near the end:
