@@ -23,7 +23,7 @@
 #include <catalog/catalog.h>
 #include <catalog/pg_proc.h>
 #include <catalog/pg_type.h>
-#include <server/dynloader.h>
+#include <dynloader.h>
 #include <storage/ipc.h>
 #include <storage/proc.h>
 #include <stdio.h>
