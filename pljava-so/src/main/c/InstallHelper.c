@@ -10,7 +10,11 @@
  *   Chapman Flack
  */
 #include <postgres.h>
+#if PGSQL_MAJOR_VER > 9 || PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER >= 3
 #include <access/htup_details.h>
+#else
+#include <access/htup.h>
+#endif
 #include <catalog/pg_language.h>
 #include <catalog/pg_proc.h>
 #include <commands/portalcmds.h>
@@ -20,6 +24,10 @@
 #include <utils/builtins.h>
 #include <utils/memutils.h>
 #include <utils/syscache.h>
+
+#ifndef SearchSysCache1
+#define SearchSysCache1(cid, k1) SearchSysCache(cid, k1, 0, 0, 0)
+#endif
 
 #include "pljava/InstallHelper.h"
 #include "pljava/Function.h"

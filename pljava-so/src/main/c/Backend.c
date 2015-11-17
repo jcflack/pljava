@@ -238,19 +238,27 @@ static void initsequencer(enum initstage is, bool tolerant);
 
 #if PGSQL_MAJOR_VER < 9 || PGSQL_MAJOR_VER == 9 && PGSQL_MINOR_VER == 0
 #define ASSIGNHOOK(name,type) \
-	static void \
+	static bool \
 	CppConcat(assign_,name)(type newval, bool doit, GucSource source); \
-	static void \
+	static bool \
 	CppConcat(assign_,name)(type newval, bool doit, GucSource source)
+#define ASSIGNRETURN(thing) return thing
+#define ASSIGNSTRINGHOOK(name) \
+	static const char * \
+	CppConcat(assign_,name)(const char *newval, bool doit, GucSource source); \
+	static const char * \
+	CppConcat(assign_,name)(const char *newval, bool doit, GucSource source)
 #else
 #define ASSIGNHOOK(name,type) \
 	static void \
 	CppConcat(assign_,name)(type newval, void *extra); \
 	static void \
 	CppConcat(assign_,name)(type newval, void *extra)
+#define ASSIGNRETURN(thing)
+#define ASSIGNSTRINGHOOK(name) ASSIGNHOOK(name, const char *)
 #endif
 
-ASSIGNHOOK(libjvm_location, const char *)
+ASSIGNSTRINGHOOK(libjvm_location)
 {
 	libjvmlocation = (char *)newval;
 	if ( IS_FORMLESS_VOID < initstage && initstage < IS_CAND_JVMOPENED )
@@ -258,9 +266,10 @@ ASSIGNHOOK(libjvm_location, const char *)
 		alteredSettingsWereNeeded = true;
 		initsequencer( initstage, true);
 	}
+	ASSIGNRETURN(newval);
 }
 
-ASSIGNHOOK(vmoptions, const char *)
+ASSIGNSTRINGHOOK(vmoptions)
 {
 	vmoptions = (char *)newval;
 	if ( IS_FORMLESS_VOID < initstage && initstage < IS_JAVAVM_OPTLIST )
@@ -268,9 +277,10 @@ ASSIGNHOOK(vmoptions, const char *)
 		alteredSettingsWereNeeded = true;
 		initsequencer( initstage, true);
 	}
+	ASSIGNRETURN(newval);
 }
 
-ASSIGNHOOK(classpath, const char *)
+ASSIGNSTRINGHOOK(classpath)
 {
 	classpath = (char *)newval;
 	if ( IS_FORMLESS_VOID < initstage && initstage < IS_JAVAVM_OPTLIST )
@@ -278,6 +288,7 @@ ASSIGNHOOK(classpath, const char *)
 		alteredSettingsWereNeeded = true;
 		initsequencer( initstage, true);
 	}
+	ASSIGNRETURN(newval);
 }
 
 /*
@@ -362,8 +373,7 @@ static void initsequencer(enum initstage is, bool tolerant)
 			 * library, so close/unload it so another can be tried.
 			 * Format the dlerror string first: dlclose may clobber it.
 			 */
-			char *dle = (pre_format_elog_string(errno, TEXTDOMAIN),
-				format_elog_string("%s", (char *)pg_dlerror()));
+			char *dle = MemoryContextStrdup(ErrorContext, pg_dlerror());
 			pg_dlclose(libjvm_handle);
 			initstage = IS_CAND_JVMLOCATION;
 			ereport(WARNING, (
@@ -489,7 +499,7 @@ static void initsequencer(enum initstage is, bool tolerant)
 		greeting = InstallHelper_hello();
 		ereport(NULL != pljavaLoadPath ? NOTICE : DEBUG1, (
 				errmsg("PL/Java loaded"),
-				errdetail_internal("%s", greeting)));
+				errdetail("versions:\n%s", greeting)));
 		pfree(greeting);
 		if ( NULL != pljavaLoadPath )
 			InstallHelper_groundwork(); /* sqlj schema, language handlers, ...*/
