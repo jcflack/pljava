@@ -420,12 +420,6 @@ static void initsequencer(enum initstage is, bool tolerant)
 	case IS_MISC_ONCE_DONE:
 		JVMOptList_init(&optList); /* uses CurrentMemoryContext */
 		addUserJVMOptions(&optList);
-		/**
-		 * As stipulated by JRT-2003
-		 */
-		JVMOptList_add(&optList, 
-			"-Dsqlj.defaultconnection=jdbc:default:connection",
-			0, true);
 		JVMOptList_add(&optList, "vfprintf", (void*)my_vfprintf, true);
 #ifndef GCJ
 		JVMOptList_add(&optList, "-Xrs", 0, true);

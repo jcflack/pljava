@@ -45,6 +45,7 @@ public class InstallHelper
 		String implVersion =
 			InstallHelper.class.getPackage().getImplementationVersion();
 		System.setProperty( "user.name", user);
+		setPropertyIfNull( "java.awt.headless", "true");
 		setPropertyIfNull( "org.postgresql.datadir", datadir);
 		setPropertyIfNull( "org.postgresql.libdir", libdir);
 		setPropertyIfNull( "org.postgresql.sharedir", sharedir);
@@ -53,6 +54,10 @@ public class InstallHelper
 		setPropertyIfNull( "org.postgresql.pljava.native.version", nativeVer);
 		setPropertyIfNull( "org.postgresql.version",
 			Backend.getConfigOption( "server_version"));
+		/*
+		 * As stipulated by JRT-2003
+		 */
+		setPropertyIfNull( "sqlj.defaultconnection", "jdbc:default:connection");
 
 		String jreName = System.getProperty( "java.runtime.name");
 		String jreVer = System.getProperty( "java.runtime.version");
@@ -68,8 +73,8 @@ public class InstallHelper
 		String vmInfo = System.getProperty( "java.vm.info");
 
 		StringBuilder sb = new StringBuilder();
-		sb.append( "PL/Java native code: ").append( nativeVer).append( '\n');
-		sb.append( "PL/Java common code: ").append( implVersion).append( '\n');
+		sb.append( "PL/Java native code (").append( nativeVer).append( ")\n");
+		sb.append( "PL/Java common code (").append( implVersion).append( ")\n");
 		sb.append( jreName).append( " (").append( jreVer).append( ")\n");
 		sb.append( vmName).append( " (").append( vmVer);
 		if ( null != vmInfo )
