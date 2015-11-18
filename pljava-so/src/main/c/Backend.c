@@ -67,7 +67,28 @@
 PG_MODULE_MAGIC;
 #endif
 
-extern void _PG_init(void);
+/* About PGDLLEXPORT. It didn't exist before PG 9.0. In that revision it was
+ * defined (for Windows) as __declspec(dllexport) for MSVC, but as
+ * __declspec(dllimport) for any other toolchain. That was quickly changed
+ * (for 9.0.2 and ever since) as still __declspec(dllexport) for MSVC, but
+ * empty for any other toolchain. The explanation for that (in PG commit
+ * 844ed5d in November 2010) was that "dllexport and dllwrap don't work well
+ * together." There are records as far back as 2002 anyway
+ * (e.g. http://lists.gnu.org/archive/html/libtool/2002-09/msg00069.html)
+ * calling dllwrap deprecated, and PL/Java's Maven build certainly doesn't
+ * use it, I don't know what it would do if it did, and at the moment I have
+ * no one to test Windows builds using any toolchain other than MSVC anyway.
+ * It seems too brittle to rely on whatever PGDLLEXPORT might happen to mean
+ * across PG versions, and wiser for the moment to cleanly define something
+ * here, for the all of three symbols that need it.
+ */
+#ifdef _MSC_VER
+#define PLJAVADLLEXPORT __declspec (dllexport)
+#else
+#define PLJAVADLLEXPORT
+#endif
+
+extern PLJAVADLLEXPORT void _PG_init(void);
 
 #ifdef PG_GETCONFIGOPTION
 #error The macro PG_GETCONFIGOPTION needs to be renamed.
@@ -1262,13 +1283,7 @@ static void registerGUCOptions(void)
 
 static Datum internalCallHandler(bool trusted, PG_FUNCTION_ARGS);
 
-#if (PGSQL_MAJOR_VER > 8)
-extern PGDLLEXPORT Datum javau_call_handler(PG_FUNCTION_ARGS);
-#elif defined(_MSC_VER)
-extern __declspec (dllexport) Datum javau_call_handler(PG_FUNCTION_ARGS);
-#else 
-extern Datum javau_call_handler(PG_FUNCTION_ARGS);
-#endif
+extern PLJAVADLLEXPORT Datum javau_call_handler(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(javau_call_handler);
 
 /*
@@ -1279,13 +1294,7 @@ Datum javau_call_handler(PG_FUNCTION_ARGS)
 	return internalCallHandler(false, fcinfo);
 }
 
-#if (PGSQL_MAJOR_VER > 9)
-extern PGDLLEXPORT Datum java_call_handler(PG_FUNCTION_ARGS);
-#elif defined(_MSC_VER)
-extern __declspec (dllexport) Datum java_call_handler(PG_FUNCTION_ARGS);
-#else
-extern Datum java_call_handler(PG_FUNCTION_ARGS);
-#endif
+extern PLJAVADLLEXPORT Datum java_call_handler(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(java_call_handler);
 
 /*
