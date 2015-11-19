@@ -127,43 +127,21 @@ public class InstallHelper
 	private static void handlers( Connection c, Statement s, String module_path)
 	throws SQLException
 	{
-		Savepoint p = null;
-		try
-		{
-			p = c.setSavepoint();
-			s.execute(
-				"CREATE FUNCTION sqlj.java_call_handler()" +
-				" RETURNS language_handler" +
-				" AS " + eQuote(module_path) +
-				" LANGUAGE C");
-			s.execute("REVOKE ALL PRIVILEGES" +
-				" ON FUNCTION sqlj.java_call_handler() FROM public");
-			c.releaseSavepoint(p);
-		}
-		catch ( SQLException sqle )
-		{
-			c.rollback(p);
-			if ( ! "42723".equals(sqle.getSQLState()) )
-				throw sqle;
-		}
-		try
-		{
-			p = c.setSavepoint();
-			s.execute(
-				"CREATE FUNCTION sqlj.javau_call_handler()" +
-				" RETURNS language_handler" +
-				" AS " + eQuote(module_path) +
-				" LANGUAGE C");
-			s.execute("REVOKE ALL PRIVILEGES" +
-				" ON FUNCTION sqlj.javau_call_handler() FROM public");
-			c.releaseSavepoint(p);
-		}
-		catch ( SQLException sqle )
-		{
-			c.rollback(p);
-			if ( ! "42723".equals(sqle.getSQLState()) )
-				throw sqle;
-		}
+		s.execute(
+			"CREATE OR REPLACE FUNCTION sqlj.java_call_handler()" +
+			" RETURNS language_handler" +
+			" AS " + eQuote(module_path) +
+			" LANGUAGE C");
+		s.execute("REVOKE ALL PRIVILEGES" +
+			" ON FUNCTION sqlj.java_call_handler() FROM public");
+
+		s.execute(
+			"CREATE OR REPLACE FUNCTION sqlj.javau_call_handler()" +
+			" RETURNS language_handler" +
+			" AS " + eQuote(module_path) +
+			" LANGUAGE C");
+		s.execute("REVOKE ALL PRIVILEGES" +
+			" ON FUNCTION sqlj.javau_call_handler() FROM public");
 	}
 
 	private static void languages( Connection c, Statement s)
