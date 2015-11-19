@@ -125,10 +125,10 @@ it does not, as you might be thinking, set up your newly-built PL/Java as a
 language in PostgreSQL. (Neither does the `deploy` goal, if you are wondering.)
 
 What Maven's `install` does is save the newly-built artifact into the local
-repository, so other Maven-built projects can list it as a dependency. The
-portion of PL/Java for which that's most useful is the `pljava-api` subproject.
-If you change into the `pljava-api` subdirectory and run `mvn clean install`
-there, you can then easily [build your Java projects that _use_ PL/Java][jproj].
+repository, so other Maven-built projects can list it as a dependency. That
+_is_ useful for the `pljava-api` subproject: if you run `mvn clean install`
+instead of just `package`, you can then easily
+[build your Java projects that _use_ PL/Java][jproj].
 
 To "install" your built PL/Java as a language in PostgreSQL, proceed to
 the [installation instructions][inst].
