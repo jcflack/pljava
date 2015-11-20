@@ -184,4 +184,26 @@ public class InstallHelper
 		SQLDeploymentDescriptor sdd = new SQLDeploymentDescriptor(raw);
 		sdd.install(c);
 	}
+
+	private static final SchemaVariant currentSchema =
+		SchemaVariant.UNREL20130301b;
+
+	private enum SchemaVariant
+	{
+		UNREL20130301b ("c51cffa34acd5a228325143ec29563174891a873"),
+		UNREL20130301a ("624d78ca98d80ff2ded215eeca92035da5126bc0"),
+		REL_1_3_0      ("d23804a7e1154de58181a8aa48bfbbb2c8adf68b"),
+		UNREL20060212  ("671eadf7f13a7996af31f1936946bf6677ecdc73"),
+		UNREL20060125  ("8afd33ccb8a2a56e92dee9c9ced81185ff0bb34d"),
+		REL_1_1_0      ("039db412fa91a23b67ceb8d90d30bc540fef7c5d"),
+		REL_1_0_0      ("94e23ba02b55e8008a935fcf3e397db0adb4671b"),
+		UNREL20040121  ("67eea979bcd4575f285c30c581fd0d674c13c1fa"),
+		UNREL20040120  ("5e4131738cd095b7ff6367d64f809f6cec6a7ba7");
+
+		String sha;
+		SchemaVariant( String sha)
+		{
+			this.sha = sha;
+		}
+	}
 }
