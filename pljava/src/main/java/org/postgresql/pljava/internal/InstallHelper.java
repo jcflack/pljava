@@ -13,12 +13,17 @@ package org.postgresql.pljava.internal;
 
 import java.io.InputStream;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLNonTransientException;
 import java.sql.Savepoint;
 import java.sql.Statement;
 import java.text.ParseException;
 import java.util.Scanner;
+
+import static java.sql.Types.VARCHAR;
 
 import org.postgresql.pljava.jdbc.SQLUtils;
 import org.postgresql.pljava.management.SQLDeploymentDescriptor;
@@ -176,15 +181,107 @@ public class InstallHelper
 		}
 	}
 
+	/**
+	 * Execute the deployment descriptor for PL/Java itself, creating the
+	 * expected tables, functions, etc. Will be skipped if tables conforming
+	 * to the currently expected schema already seem to be there. For now, just
+	 * punt if a different, earlier schema is detected; this is where any future
+	 * auto-migration would be done.
+	 */
 	private static void deployment( Connection c, Statement s)
 	throws SQLException, ParseException
 	{
+		SchemaVariant sv = recognizeSchema( c);
+
+		if ( currentSchema == sv )
+			return; // assume (optimistically) that means there's nothing to do
+
+		if ( null != sv )
+			throw new SQLNonTransientException(
+				"Detected older PL/Java SQLJ schema " + sv.name() +
+				" and migration is not implemented", "55000");
+
 		InputStream is = InstallHelper.class.getResourceAsStream("/pljava.ddr");
 		String raw = new Scanner(is, "utf-8").useDelimiter("\\A").next();
 		SQLDeploymentDescriptor sdd = new SQLDeploymentDescriptor(raw);
 		sdd.install(c);
 	}
 
+	/**
+	 * Detect an existing PL/Java sqlj schema. Tests for changes between schema
+	 * variants that have appeared in PL/Java's git history and will return a
+	 * correct result if the schema actually is any of those, but does no
+	 * further verification. So, a known SchemaVariant could be returned for a
+	 * messed up schema that never appeared in the git history, if it happened
+	 * to match on the tested parts; likewise, a null return may not necessarily
+	 * mean nothing is there, only that whatever is there didn't match the
+	 * tests for any known variant.
+	 */
+	private static SchemaVariant recognizeSchema( Connection c)
+	throws SQLException
+	{
+		DatabaseMetaData md = c.getMetaData();
+		ResultSet rs = md.getColumns( null, "sqlj", "jar_descriptor", null);
+		boolean seen = rs.next();
+		rs.close();
+		if ( seen )
+			return SchemaVariant.UNREL20130301b;
+
+		rs = md.getColumns( null, "sqlj", "jar_descriptors", null);
+		seen = rs.next();
+		rs.close();
+		if ( seen )
+			return SchemaVariant.UNREL20130301a;
+
+		rs = md.getColumns( null, "sqlj", "jar_repository", "jarmanifest");
+		seen = rs.next();
+		rs.close();
+		if ( seen )
+			return SchemaVariant.REL_1_3_0;
+
+		rs = md.getColumns( null, "sqlj", "typemap_entry", null);
+		seen = rs.next();
+		rs.close();
+		if ( seen )
+			return SchemaVariant.UNREL20060212;
+
+		rs = md.getColumns( null, "sqlj", "jar_repository", "jarowner");
+		if ( rs.next() )
+		{
+			int t = rs.getInt("DATA_TYPE");
+			rs.close();
+			if ( VARCHAR == t )
+				return SchemaVariant.UNREL20060125;
+			return SchemaVariant.REL_1_1_0;
+		}
+		rs.close();
+
+		rs = md.getColumns( null, "sqlj", "jar_repository", "deploymentdesc");
+		seen = rs.next();
+		rs.close();
+		if ( seen )
+			return SchemaVariant.REL_1_0_0;
+
+		rs = md.getColumns( null, "sqlj", "jar_entry", null);
+		seen = rs.next();
+		rs.close();
+		if ( seen )
+			return SchemaVariant.UNREL20040121;
+
+		rs = md.getColumns( null, "sqlj", "jar_repository", "jarimage");
+		seen = rs.next();
+		rs.close();
+		if ( seen )
+			return SchemaVariant.UNREL20040120;
+
+		return null;
+	}
+
+	/**
+	 * The SchemaVariant that is used and expected by the current code.
+	 * Define additional variants as the schema evolves, and keep this field
+	 * up to date.
+	 */
 	private static final SchemaVariant currentSchema =
 		SchemaVariant.UNREL20130301b;
 
