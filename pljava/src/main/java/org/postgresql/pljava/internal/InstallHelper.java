@@ -197,9 +197,10 @@ public class InstallHelper
 			return; // assume (optimistically) that means there's nothing to do
 
 		if ( null != sv )
-			throw new SQLNonTransientException(
-				"Detected older PL/Java SQLJ schema " + sv.name() +
-				" and migration is not implemented", "55000");
+		{
+			currentSchema.migrateFrom( sv, c, s);
+			return;
+		}
 
 		InputStream is = InstallHelper.class.getResourceAsStream("/pljava.ddr");
 		String raw = new Scanner(is, "utf-8").useDelimiter("\\A").next();
@@ -287,7 +288,45 @@ public class InstallHelper
 
 	private enum SchemaVariant
 	{
-		UNREL20130301b ("c51cffa34acd5a228325143ec29563174891a873"),
+		UNREL20130301b ("c51cffa34acd5a228325143ec29563174891a873")
+		{
+			@Override
+			void migrateFrom( SchemaVariant sv, Connection c, Statement s)
+			throws SQLException
+			{
+				switch ( sv )
+				{
+				case REL_1_3_0:
+					s.execute(
+						"CREATE TABLE sqlj.jar_descriptor " +
+						"(jarId, ordinal, entryId) AS SELECT " +
+						"CAST(jarId AS INT), CAST(0 AS INT2), " +
+						"deploymentDesc FROM sqlj.jar_repository " +
+						"WHERE deploymentDesc IS NOT NULL");
+					s.execute(
+						"ALTER TABLE sqlj.jar_repository " +
+						"DROP deploymentDesc");
+					s.execute(
+						"ALTER TABLE sqlj.jar_descriptor " +
+						"ADD FOREIGN KEY (jarId) " +
+						"REFERENCES sqlj.jar_repository ON DELETE CASCADE, " +
+						"ADD PRIMARY KEY (jarId, ordinal), " +
+						"ALTER COLUMN entryId SET NOT NULL, " +
+						"ADD FOREIGN KEY (entryId) REFERENCES sqlj.jar_entry " +
+						"ON DELETE CASCADE");
+					s.execute(
+						"GRANT SELECT ON sqlj.jar_descriptor TO PUBLIC");
+					break;
+				case UNREL20130301a:
+					s.execute(
+						"ALTER TABLE sqlj.jar_descriptors " +
+						"RENAME TO jar_descriptor");
+					break;
+				default:
+					super.migrateFrom( sv, c, s);
+				}
+			}
+		},
 		UNREL20130301a ("624d78ca98d80ff2ded215eeca92035da5126bc0"),
 		REL_1_3_0      ("d23804a7e1154de58181a8aa48bfbbb2c8adf68b"),
 		UNREL20060212  ("671eadf7f13a7996af31f1936946bf6677ecdc73"),
@@ -301,6 +340,14 @@ public class InstallHelper
 		SchemaVariant( String sha)
 		{
 			this.sha = sha;
+		}
+
+		void migrateFrom( SchemaVariant sv, Connection c, Statement s)
+		throws SQLException
+		{
+			throw new SQLNonTransientException(
+				"Detected older PL/Java SQLJ schema " + sv.name() +
+				", from which no automatic migration is implemented", "55000");
 		}
 	}
 }
