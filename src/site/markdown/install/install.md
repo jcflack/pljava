@@ -32,6 +32,14 @@ See [locating libjvm][jvmloc] for help finding it.
 [locate]: locate.html
 [jvmloc]: locatejvm.html
 
+## Special topics
+
+Be sure to read these additional sections if:
+
+* You are installing to [a PostgreSQL release earlier than 9.2][pre92]
+
+[pre92]: prepg92.html
+
 ## Install, configure, check
 
 Because PL/Java, by design, runs entirely in the backend process created
@@ -146,3 +154,6 @@ be more convenient to put the settings in the file than to issue
 `ALTER DATABASE` for several databases, but `pg_ctl reload` will be needed
 to make changed settings effective. Starting with PostgreSQL 9.4,
 `ALTER SYSTEM` may be used as an alternative to editing the file.
+
+For PostgreSQL releases [earlier than 9.2][pre92], the configuration file is
+the _only_ way to make your settings persistent.
