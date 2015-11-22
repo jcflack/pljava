@@ -37,8 +37,10 @@ See [locating libjvm][jvmloc] for help finding it.
 Be sure to read these additional sections if:
 
 * You are installing to [a PostgreSQL release earlier than 9.2][pre92]
+* You are installing on [a system using SELinux][selinux]
 
 [pre92]: prepg92.html
+[selinux]: selinux.html
 
 ## Install, configure, check
 

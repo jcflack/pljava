@@ -4,7 +4,8 @@ In PostgreSQL releases 9.2 and later, PL/Java can be installed entirely
 without disturbing the `postgresql.conf` file or reloading/restarting the
 server: the configuration variables can be set interactively in a session
 until PL/Java loads sucessfully, then saved with a simple
-`ALTER DATABASE` _dbname_ `SET` _var_ `FROM CURRENT`.
+`ALTER DATABASE` _dbname_ `SET` _var_ `FROM CURRENT` for each setting
+that had to be changed.
 
 Releases earlier than 9.2 are slightly less convenient. It is still possible
 to work out the right settings in an interactive session, but once found,
@@ -18,12 +19,12 @@ be earlier in the file than any settings of `pljava.*` variables.
 ## Trying settings interactively
 
 It is still possible to do an exploratory session to find the variable settings
-that work, _usually_ before touching `postgresql.conf` at all, but
+that work before touching `postgresql.conf` at all, but
 the details are slightly different.
 
 In later PostgreSQL versions, you would typically use some `SET` commands
-followed by a `LOAD` (followed, perhaps, by more `SET` commands unless you get
-everything right on the first try).
+followed by a `LOAD` (followed, perhaps, by more `SET` commands unless you
+always get things right on the first try).
 
 Before release 9.2, however, the order has to be `LOAD` first, which typically
 will lead to an incompletely-started warning because the configuration settings
@@ -40,7 +41,7 @@ that worked, and use `pg_ctl reload` to make the new settings effective.
 The procedure above relies on the way loading stops when the settings are not
 right, giving you a chance to adjust them interactively. That turns out to be
 a problem if there are previously-saved settings, or the original defaults,
-that actually *work* even if they are not the settings you want. In that case,
+that happen to *work* even if they are not the settings you want. In that case,
 the `LOAD` command starts PL/Java right up, leaving you no chance in the
 interactive session to change anything.
 

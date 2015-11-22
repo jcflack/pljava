@@ -50,6 +50,12 @@ compile/link tools, make sure the ones found on your search path are the
 ones you plan to use, and the version-test commands above give the output
 you expect.
 
+## Special topics
+
+Please review any of the following that apply to your situation:
+
+* [Version compatibility](versions.html)
+
 ## Obtaining PL/Java sources
 
 The best way to obtain up-to-date PL/Java sources is to have [git][] installed

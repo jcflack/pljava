@@ -11,14 +11,18 @@ and benefits of PL/Java can be read on the [wiki][].
 
 ## About this site
 
-You have reached the web site for comprehensive (largely machine generated)
-information on PL/Java, suitable for advanced use or for those interested in
-contributing to the project. More basic information on how to [set up][iguide]
-or [use][uguide] PL/Java can be found on the [wiki][]. The following sections
-offer very brief summaries.
+This site includes reference
+information on PL/Java, covering how to [build][] it, [install][] it,
+and [use][] it. There is also a [wiki][] with more information and examples,
+though in some cases dated. While information from the wiki is gradually
+being migrated to this site and brought up to date, you should still check
+the wiki for information you do not find here.
 
-[iguide]: install/install.html
-[uguide]: https://github.com/tada/pljava/wiki/User-guide
+The following sections offer very brief summaries.
+
+[build]: build/build.html
+[install]: install/install.html
+[use]: use/use.html
 
 ## Use of PL/Java, in a nutshell
 
@@ -56,9 +60,7 @@ PL/Java can be downloaded, then [built using Maven][build]. The build produces
 a native code library (file with name ending in .so, .dll, etc., depending on
 the plaform) and a JAR file. PostgreSQL must be configured to know where these
 are, in addition to the native library for the Java runtime itself. The
-[installation guide][iguide] has details.
-
-[build]: build/build.html
+[installation guide][install] has details.
 
 ## Moving PL/Java forward
 
