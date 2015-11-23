@@ -670,7 +670,10 @@ static void reLogWithChangedLevel(int level)
 #else
 	if (!errstart(level, edata->filename, edata->lineno,
 				  edata->funcname, NULL))
+	{
+		FreeErrorData(edata);
 		return;
+	}
 
 	errcode(sqlstate);
 	if (edata->message)
@@ -698,6 +701,7 @@ static void reLogWithChangedLevel(int level)
 	if (edata->internalquery)
 		internalerrquery(edata->internalquery);
 
+	FreeErrorData(edata);
 	errfinish(0);
 #endif
 }
