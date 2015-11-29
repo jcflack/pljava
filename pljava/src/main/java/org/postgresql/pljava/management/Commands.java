@@ -87,7 +87,7 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * </blockquote>
  * <h3>Parameters</h3>
  * <blockquote><table><caption>Parameters for
- * sqlj.install_jar(bytea...)<caption>
+ * sqlj.install_jar(bytea...)</caption>
  * <tr>
  * <td valign="top"><b>jar_image</b></td>
  * <td>The byte array that constitutes the contents of the jar that should be

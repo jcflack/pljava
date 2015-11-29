@@ -3266,12 +3266,12 @@ public class SPIDatabaseMetaData implements DatabaseMetaData
 	 * <LI><B>ATTR_TYPE_NAME</B> String =&gt; Data source dependent type name.
 	 * For a UDT, the type name is fully qualified. For a REF, the type name is
 	 * fully qualified and represents the target type of the reference type.
-	 * <LI><B>ATTR_SIZE</B> int => column size. For char or date types this is
-	 * the maximum number of characters; for numeric or decimal types this is
+	 * <LI><B>ATTR_SIZE</B> int =&gt; column size. For char or date types this
+	 * is the maximum number of characters; for numeric or decimal types this is
 	 * precision.
 	 * <LI><B>DECIMAL_DIGITS</B> int =&gt; the number of fractional digits
 	 * <LI><B>NUM_PREC_RADIX</B> int =&gt; Radix (typically either 10 or 2)
-	 * <LI><B>NULLABLE</B> int => whether NULL is allowed
+	 * <LI><B>NULLABLE</B> int =&gt; whether NULL is allowed
 	 * <UL>
 	 * <LI> attributeNoNulls - might not allow NULL values
 	 * <LI> attributeNullable - definitely allows NULL values
