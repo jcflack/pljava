@@ -628,9 +628,9 @@ check_tolerant:
 static void reLogWithChangedLevel(int level)
 {
 	ErrorData *edata = CopyErrorData();
-	FlushErrorState();
 	int sqlstate = edata->sqlerrcode;
 	int category = ERRCODE_TO_CATEGORY(sqlstate);
+	FlushErrorState();
 	if ( WARNING > level )
 	{
 		if ( ERRCODE_SUCCESSFUL_COMPLETION != category )
