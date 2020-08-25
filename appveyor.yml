@@ -201,7 +201,11 @@ test_script:
             if (problems.stream().anyMatch(s -> s.contains("SetOfRecordTest")))
             {
               ResultSet rs = (ResultSet) q(c,
-                "SELECT *, t_date::text AS ttdate, t_time::text AS tttime " +
+                "SELECT *, t_date::text AS ttdate, t_time::text AS tttime, " +
+                "encode(date_send(t_date), 'hex') AS xdate, " +
+                "encode(time_send(t_time), 'hex') AS xtime, " +
+                "encode(date_send('2005-06-01'::date), 'hex') AS xodate, " +
+                "encode(time_send('20:56'::time), 'hex') AS xotime " +
                 "FROM javatest.executeselecttorecords(" +
                 "'select ''Foo'',  1,  1.5::float,  23.67,  ''2005-06-01'', " +
                 "''20:56''::time, ''192.168.0''') " +
@@ -214,7 +218,9 @@ test_script:
                   rs.getString("t_date"), rs.getString("t_time"),
                   rs.getObject("t_date", java.time.LocalDate.class).toString(),
                   rs.getObject("t_time", java.time.LocalTime.class).toString(),
-                  rs.getString("ttdate"), rs.getString("tttime")
+                  rs.getString("ttdate"), rs.getString("tttime"),
+                  rs.getString("xdate"), rs.getString("xtime"),
+                  rs.getString("xodate"), rs.getString("xotime")
                 ));
             }
           }
