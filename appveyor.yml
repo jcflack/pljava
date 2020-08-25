@@ -84,6 +84,7 @@ test_script:
 
       import static java.nio.file.Paths.get
       import java.sql.Connection
+      import java.sql.ResultSet
       import org.postgresql.pljava.packaging.Node
       import static org.postgresql.pljava.packaging.Node.q
       import static org.postgresql.pljava.packaging.Node.qp
@@ -199,13 +200,16 @@ test_script:
           {
             if (problems.stream().anyMatch(s -> s.contains("SetOfRecordTest")))
             {
-              qp(c,
+              ResultSet rs = (ResultSet) q(c,
                 "SELECT * FROM javatest.executeselecttorecords(" +
                 "'select ''Foo'',  1,  1.5::float,  23.67,  ''2005-06-01'', " +
                 "''20:56''::time, ''192.168.0''') " +
                 "AS r(t_varchar varchar, t_integer integer, t_float float, " +
                 "t_decimal decimal(8,2), t_date date, t_time time, t_cidr cidr)"
-              );
+              ).filter(o -> o instanceof ResultSet).findFirst().get();
+              rs.next();
+              System.out.println(
+                List.of(rs.getString("t_date"), rs.getString("t_time")));
             }
           }
 
