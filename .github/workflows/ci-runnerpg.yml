@@ -1,5 +1,7 @@
 # This workflow will build and test PL/Java against the version of PostgreSQL
-# preinstalled in the GitHub Actions runner environment.
+# preinstalled in the GitHub Actions runner environment. Naturally, this one
+# does not have a PostgreSQL version in the build matrix. The version that's
+# preinstalled is the version you get.
 
 name: PL/Java CI with PostgreSQL version supplied by the runner
 
@@ -132,11 +134,27 @@ jobs:
           tail -n 1
         )
 
-        sudo "$JAVA_HOME"/bin/java -Dpgconfig="$pgConfig" -jar "$packageJar"
+        #
+        # The runner on a Unix-like OS is running as a non-privileged user, but
+        # has passwordless sudo available (needed to install the PL/Java files
+        # into the system directories where the supplied PostgreSQL lives). By
+        # contrast, on Windows the runner has admin privilege, and can install
+        # the files without any fuss (but later below, pg_ctl will have to be
+        # used when starting PostgreSQL; pg_ctl has a Windows-specific ability
+        # to drop admin privs so postgres will not refuse to start).
+        #
+        if [[ $RUNNER_OS == Windows ]]
+        then
+          pathSep=';'
+          java -Dpgconfig="$pgConfig" -jar "$packageJar"
+        else
+          pathSep=':'
+          sudo "$JAVA_HOME"/bin/java -Dpgconfig="$pgConfig" -jar "$packageJar"
+        fi
 
         jshell \
           -execution local \
-          "-J--class-path=$packageJar:$jdbcJar" \
+          "-J--class-path=$packageJar$pathSep$jdbcJar" \
           "--class-path=$packageJar" \
           "-J--add-modules=java.sql,java.sql.rowset" \
           "-J-Dpgconfig=$pgConfig" \
@@ -152,20 +170,25 @@ jobs:
         import static org.postgresql.pljava.packaging.Node.q
         import static org.postgresql.pljava.packaging.Node.dfa
         import static org.postgresql.pljava.packaging.Node.isVoidResultSet
+        import static org.postgresql.pljava.packaging.Node.s_isWindows
 
-        Path javaLibDir = get(System.getProperty("java.home"), "lib")
+        Path javaLibDir =
+          get(System.getProperty("java.home"), s_isWindows ? "bin" : "lib")
 
         Path libjvm = (
           "Mac OS X".equals(System.getProperty("os.name"))
           ? Stream.of("libjli.dylib", "jli/libjli.dylib")
             .map(s -> javaLibDir.resolve(s))
             .filter(Files::exists).findFirst().get()
-          : javaLibDir.resolve("server/libjvm.so")
+          : javaLibDir.resolve(s_isWindows ? "jvm.dll" : "server/libjvm.so")
         );
 
         String vmopts = "-enableassertions:org.postgresql.pljava... -Xcheck:jni"
 
         Node n1 = Node.get_new_node("TestNode1")
+
+        if ( s_isWindows )
+          n1.use_pg_ctl(true)
 
         /*
          * Keep a tally of the three types of diagnostic notices that may be
