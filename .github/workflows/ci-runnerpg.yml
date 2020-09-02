@@ -13,10 +13,19 @@ jobs:
   build:
     if: true
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.oscc.os }}
+    continue-on-error: true
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        oscc:
+#         - os: ubuntu-latest
+#           cc: gcc
+#         - os: macos-latest
+#           cc: clang
+#         - os: windows-latest
+#           cc: msvc
+          - os: windows-latest
+            cc: mingw
         java: [9, 11] # , 12, 14, 15-ea]
 
     steps:
@@ -41,15 +50,65 @@ jobs:
       if: ${{ 'Linux' == runner.os }}
       run: sudo apt-get install postgresql-server-dev-12 libkrb5-dev
 
-    - name: Build PL/Java
+    - name: Build PL/Java (Linux, macOS)
+      if: ${{ 'Windows' != runner.os }}
       working-directory: pljava
       run: |
         mvn clean install --batch-mode \
           -Psaxon-examples -Ppgjdbc-ng \
           -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn
 
+    - name: Build PL/Java (Windows MinGW-w64)
+      if: ${{ 'Windows' == runner.os && 'mingw' == matrix.oscc.cc }}
+      working-directory: pljava
+      #
+      # GitHub Actions will allow 'bash' as a shell choice, even on a Windows
+      # runner, in which case it's the bash from Git for Windows. That isn't the
+      # same as the msys64\usr\bin\bash that we want; what's more, while both
+      # rely on a cygwin DLL, they don't rely on the same one, and an attempt
+      # to exec one from the other leads to a "fatal error - cygheap base
+      # mismatch". So, the bash we want has to be started by something other
+      # than the bash we've got. In this case, set shell: to a command that
+      # will use cmd to start the right bash.
+      #
+      # Some of the MinGW magic is set up by the bash profile run at "login", so
+      # bash must be started with -l. That profile ends with a cd $HOME, so to
+      # avoid changing the current directory, set HOME=. first (credit for that:
+      # https://superuser.com/a/806371). As set above, . is really the pljava
+      # working-directory, so the bash script should start by resetting HOME to
+      # the path of its parent.
+      #
+      # The runner is provisioned with a very long PATH that includes separate
+      # bin directories for pre-provisioned packages. The MinGW profile replaces
+      # that with a much shorter path, so mvn and pg_config below must be given
+      # as absolute paths (using M2 and PGBIN supplied in the environment) or
+      # they won't be found. As long as mvn itself can be found, it is able
+      # to find java without difficulty, using the JAVA_HOME that is also in
+      # the environment.
+      #
+      # Those existing variables in the environment are all spelled in Windows
+      # style with drive letters, colons, and backslashes, rather than the MinGW
+      # unixy style, but the mingw bash doesn't seem to object.
+      #
+      # If you use the runner-supplied bash to examine the environment, you will
+      # see MSYSTEM=MINGW64 already in it, but that apparently is something the
+      # runner-supplied bash does. It must be set here before invoking the MinGW
+      # bash directly.
+      #
+      env:
+        HOME: .
+        MSYSTEM: MINGW64
+      shell: 'cmd /C "c:\msys64\usr\bin\bash -l "{0}""'
+      run: |
+        HOME=$( (cd .. && pwd) )
+        "$M2"/mvn clean install --batch-mode \
+          -Dpgsql.pgconfig="$PGBIN"'\pg_config' \
+          -Psaxon-examples -Ppgjdbc-ng \
+          -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn
+
     - name: Install and test PL/Java
       working-directory: pljava
+      shell: bash
       run: |
         pgConfig=pg_config # runner-supplied, just get it from the PATH
 
