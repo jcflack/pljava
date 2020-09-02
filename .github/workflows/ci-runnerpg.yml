@@ -158,11 +158,23 @@ jobs:
         # to a different build made with MSVC, and those directories really
         # exist, so specify that one explicitly when running on Windows.
         #
+        # The Git for Windows bash environment includes a find command, and the
+        # things found have unixy paths returned. Make them Windowsy here, with
+        # a hardcoded assumption they start with /c which should become c: (as
+        # appears to be the case in the Windows runner currently).
+        #
         if [[ $RUNNER_OS == Windows ]]
         then
           pathSep=';'
           pgConfig="$PGBIN"'\pg_config'
           java -Dpgconfig="$pgConfig" -jar "$packageJar"
+          function toWindowsPath() {
+            local p
+            p="c:${1#/c}"
+            printf "%s" "${p//\//\\}"
+          }
+          jdbcJar="$(toWindowsPath "$jdbcJar")"
+          mavenRepo="$(toWindowsPath "$mavenRepo")"
         else
           pathSep=':'
           sudo "$JAVA_HOME"/bin/java -Dpgconfig="$pgConfig" -jar "$packageJar"
