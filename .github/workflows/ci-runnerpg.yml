@@ -42,11 +42,19 @@ jobs:
       with:
         java-version: ${{ matrix.java }}
 
-    - name: Report Java, Maven, and PostgreSQL versions
+    - name: Report Java, Maven, and PostgreSQL versions (Linux, macOS)
+      if: ${{ 'Windows' != runner.os }}
       run: |
         java -version
         mvn --version
         pg_config
+
+    - name: Report Java, Maven, and PostgreSQL versions (Windows)
+      if: ${{ 'Windows' == runner.os }}
+      run: |
+        java -version
+        mvn --version
+        & "$Env:PGBIN\pg_config"
 
     - name: Obtain PG development files (Ubuntu, PGDG)
       if: ${{ 'Linux' == runner.os }}
@@ -109,6 +117,7 @@ jobs:
           -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn
 
     - name: Install and test PL/Java
+      if: ${{ '9' != matrix.java  ||  'Windows' != runner.os }}
       working-directory: pljava
       shell: bash
       run: |
@@ -143,9 +152,16 @@ jobs:
         # used when starting PostgreSQL; pg_ctl has a Windows-specific ability
         # to drop admin privs so postgres will not refuse to start).
         #
+        # The Windows runner seems to have an extra pg_config somewhere on the
+        # path, that reports it was built with MinGW and installed in paths
+        # containing Strawberry that don't really exist. $PGBIN\pg_config refers
+        # to a different build made with MSVC, and those directories really
+        # exist, so specify that one explicitly when running on Windows.
+        #
         if [[ $RUNNER_OS == Windows ]]
         then
           pathSep=';'
+          pgConfig="$PGBIN"'\pg_config'
           java -Dpgconfig="$pgConfig" -jar "$packageJar"
         else
           pathSep=':'
