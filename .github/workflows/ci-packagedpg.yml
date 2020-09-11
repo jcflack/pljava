@@ -1,7 +1,7 @@
 # This workflow will build and test PL/Java against versions of PostgreSQL
-# built from source.
+# installed from prebuilt packages.
 
-name: PL/Java CI with PostgreSQL versions built from source
+name: PL/Java CI with PostgreSQL prebuilt packaged versions
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
           - os: windows-latest
             cc: mingw
         java: [9, 11, 12, 14, 15-ea]
-        pgsql: [REL_12_4, REL_11_9, REL_10_14, REL9_6_19, REL9_5_23]
+        pgsql: [12, 11, 10, 9.6, 9.5]
 
     steps:
 
@@ -35,14 +35,7 @@ jobs:
       with:
         path: pljava
 
-    - name: Check out PostgreSQL
-      uses: actions/checkout@v2
-      with:
-        path: postgresql
-        repository: postgres/postgres
-        ref: ${{ matrix.pgsql }}
-
-    - name: Configure and build PostgreSQL
+    - name: Install PostgreSQL
       shell: bash
       run: echo here a miracle occurs
 
