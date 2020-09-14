@@ -204,7 +204,7 @@ jobs:
         import java.sql.Connection
         import org.postgresql.pljava.packaging.Node
         import static org.postgresql.pljava.packaging.Node.q
-        import static org.postgresql.pljava.packaging.Node.dfa
+        import static org.postgresql.pljava.packaging.Node.stateMachine
         import static org.postgresql.pljava.packaging.Node.isVoidResultSet
         import static org.postgresql.pljava.packaging.Node.s_isWindows
 
@@ -262,7 +262,7 @@ jobs:
           {
             succeeding = true; // become optimistic, will be using &= below
 
-            succeeding &= dfa(
+            succeeding &= stateMachine(
               "create extension no result",
               null,
 
@@ -286,7 +286,7 @@ jobs:
            */
           try ( Connection c = n1.connect() )
           {
-            succeeding &= dfa(
+            succeeding &= stateMachine(
               "saxon path examples path",
               null,
 
