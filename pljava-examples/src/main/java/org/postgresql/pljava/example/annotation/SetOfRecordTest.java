@@ -48,12 +48,12 @@ install={
 "      t_decimal decimal(8,2), t_date date, t_time time, t_cidr cidr)",
 
 " SELECT " +
-"  CASE WHEN r IS DISTINCT FROM ROW('Foo'::varchar, 1::integer, 1.5::float, " +
+"  javatest.logmessage('INFO', ARRAY[" +
+"    encode(record_send(r), 'hex'), encode(record_send(" +
+"       ROW('Foo'::varchar, 1::integer, 1.5::float, " +
 "       23.67::decimal(8,2), '2005-06-01'::date, '20:56'::time, " +
-"       '192.168'::cidr) " +
-"  THEN javatest.logmessage('WARNING', 'SetOfRecordTest[1] not ok') " +
-"  ELSE javatest.logmessage('INFO', 'SetOfRecordTest[1] ok') " +
-"  END " +
+"       '192.168'::cidr)), 'hex')" +
+"    ]::text) " +
 " FROM " +
 "  javatest.executeselecttorecords( " +
 "   'select ''Foo'',  1,  1.5::float,  23.67,  ''2005-06-01'',  " +
