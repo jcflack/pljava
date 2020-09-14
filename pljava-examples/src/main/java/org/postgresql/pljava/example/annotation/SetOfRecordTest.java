@@ -32,13 +32,27 @@ import org.postgresql.pljava.annotation.SQLAction;
  * there was no {@code =} or {@code DISTINCT FROM} operator between row types.
  */
 @SQLAction(requires="selecttorecords fn", implementor="postgresql_ge_80400",
-install=
+install={
 " SELECT " +
 "  CASE WHEN r IS DISTINCT FROM ROW('Foo'::varchar, 1::integer, 1.5::float, " +
 "       23.67::decimal(8,2), '2005-06-01'::date, '20:56'::time, " +
 "       '192.168'::cidr) " +
-"  THEN javatest.logmessage('WARNING', 'SetOfRecordTest not ok') " +
-"  ELSE javatest.logmessage('INFO', 'SetOfRecordTest ok') " +
+"  THEN javatest.logmessage('WARNING', 'SetOfRecordTest[0] not ok') " +
+"  ELSE javatest.logmessage('INFO', 'SetOfRecordTest[0] ok') " +
+"  END " +
+" FROM " +
+"  javatest.executeselecttorecords( " +
+"   'select ''Foo'',  1,  1.5::float,  23.67,  ''2005-06-01'',  " +
+"           ''20:56''::time, ''192.168.0''') " +
+"  AS r(t_varchar varchar, t_integer integer, t_float float, " +
+"      t_decimal decimal(8,2), t_date date, t_time time, t_cidr cidr)",
+
+" SELECT " +
+"  CASE WHEN r IS DISTINCT FROM ROW('Foo'::varchar, 1::integer, 1.5::float, " +
+"       23.67::decimal(8,2), '2005-06-01'::date, '20:56'::time, " +
+"       '192.168'::cidr) " +
+"  THEN javatest.logmessage('WARNING', 'SetOfRecordTest[1] not ok') " +
+"  ELSE javatest.logmessage('INFO', 'SetOfRecordTest[1] ok') " +
 "  END " +
 " FROM " +
 "  javatest.executeselecttorecords( " +
@@ -46,7 +60,7 @@ install=
 "           ''20:56''::time, ''192.168.0''') " +
 "  AS r(t_varchar varchar, t_integer integer, t_float float, " +
 "      t_decimal decimal(8,2), t_date date, t_time time, t_cidr cidr)"
-)
+})
 public class SetOfRecordTest implements ResultSetHandle {
 
 	@Function(schema="javatest", name="executeselecttorecords",
