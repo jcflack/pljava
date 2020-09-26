@@ -74,7 +74,11 @@ before_install: |
   [[ $JAVA_VERSION == 9 ]] && certs=--cacerts || unset certs
   [[ $TRAVIS_OS_NAME == osx ]] && tgt='--target jdk' || unset tgt
 
-  [[ $TRAVIS_OS_NAME == osx ]] && which gtar
+  [[ $TRAVIS_OS_NAME == osx ]] && {
+    echo About to run \'which gtar\'
+    which gtar
+    echo Just ran \'which gtar\'
+  }
 
   . "$installJdk" --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
 
