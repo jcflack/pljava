@@ -1,4 +1,4 @@
-language: java
+language: minimal
 os:
   - linux
   - osx
@@ -7,48 +7,62 @@ arch:
   - ppc64le
 dist: bionic
 osx_image: xcode11
-jdk:
-  - openjdk14
-  - openjdk13
-  - openjdk12
-  - openjdk11
-  - openjdk10
-  - openjdk9
 env:
-  - POSTGRESQL_VERSION=12
+  - POSTGRESQL_VERSION: 12
+    JAVA_VERSION: 14
+    JVM_IMPL: hotspot
+  - POSTGRESQL_VERSION: 12
+    JAVA_VERSION: 14
+    JVM_IMPL: openj9
+  - POSTGRESQL_VERSION: 12
+    JAVA_VERSION: 11
+    JVM_IMPL: hotspot
+  - POSTGRESQL_VERSION: 12
+    JAVA_VERSION: 9
+    JVM_IMPL: hotspot
+  - POSTGRESQL_VERSION: 10
+    JAVA_VERSION: 14
+    JVM_IMPL: hotspot
+  - POSTGRESQL_VERSION: 9.5
+    JAVA_VERSION: 14
+    JVM_IMPL: hotspot
 
 jobs:
   exclude:
-    - arch: ppc64le
-      os: osx
+    - os: osx
   include:
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=11
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=10
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=9.5
     - os: osx
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=11
+      arch: amd64
+      env:
+        - POSTGRESQL_VERSION: 11
+          JAVA_VERSION: 14
+          JVM_IMPL: hotspot
     - os: osx
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=10
+      arch: amd64
+      env:
+        - POSTGRESQL_VERSION: 10
+          JAVA_VERSION: 14
+          JVM_IMPL: hotspot
     - os: osx
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=9.5
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=SOURCE
+      arch: amd64
+      env:
+        - POSTGRESQL_VERSION: 9.5
+          JAVA_VERSION: 14
+          JVM_IMPL: hotspot
 
 cache:
   directories:
     - $HOME/.m2
-before_install:
-  - . .travis/travis_install_postgresql.sh
+
+before_install: |
+  javaUrl=https://api.adoptopenjdk.net/v3/binary/latest
+  javaUrl="$javaUrl/$JAVA_VERSION/ga/$TRAVIS_OS_NAME"
+  javaUrl="$javaUrl/${TRAVIS_CPU_ARCH//amd64/x64}/jdk"
+  javaUrl="$javaUrl/$JVM_IMPL/normal/adoptopenjdk"
+
+  . "$TRAVIS_BUILD_DIR"/install-jdk.sh --url "$javaUrl"
+
+  . .travis/travis_install_postgresql.sh
 
 install: |
   $pgConfig
