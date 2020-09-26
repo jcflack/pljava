@@ -2,6 +2,9 @@ language: java
 os:
   - linux
   - osx
+arch:
+  - amd64
+  - ppc64le
 dist: bionic
 osx_image: xcode11
 jdk:
@@ -13,6 +16,34 @@ jdk:
   - openjdk9
 env:
   - POSTGRESQL_VERSION=12
+
+jobs:
+  exclude:
+    - arch: ppc64le
+      os: osx
+  include:
+    - os: linux
+      jdk: openjdk14
+      env: POSTGRESQL_VERSION=11
+    - os: linux
+      jdk: openjdk14
+      env: POSTGRESQL_VERSION=10
+    - os: linux
+      jdk: openjdk14
+      env: POSTGRESQL_VERSION=9.5
+    - os: osx
+      jdk: openjdk14
+      env: POSTGRESQL_VERSION=11
+    - os: osx
+      jdk: openjdk14
+      env: POSTGRESQL_VERSION=10
+    - os: osx
+      jdk: openjdk14
+      env: POSTGRESQL_VERSION=9.5
+    - os: linux
+      jdk: openjdk14
+      env: POSTGRESQL_VERSION=SOURCE
+
 cache:
   directories:
     - $HOME/.m2
@@ -179,27 +210,3 @@ script: |
   succeeding &= (0 == results.get("ng"));
   System.exit(succeeding ? 0 : 1)
   ENDJSHELL
-
-jobs:
-  include:
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=11
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=10
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=9.5
-    - os: osx
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=11
-    - os: osx
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=10
-    - os: osx
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=9.5
-    - os: linux
-      jdk: openjdk14
-      env: POSTGRESQL_VERSION=SOURCE
