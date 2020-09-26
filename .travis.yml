@@ -60,6 +60,7 @@ before_install: |
   javaUrl="$javaUrl/${TRAVIS_CPU_ARCH//amd64/x64}/jdk"
   javaUrl="$javaUrl/$JVM_IMPL/normal/adoptopenjdk"
 
+  which install-jdk.sh
   ls . ~ bin ~/bin
 
   . install-jdk.sh --url "$javaUrl"
