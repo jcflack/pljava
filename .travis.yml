@@ -10,21 +10,27 @@ env:
   - POSTGRESQL_VERSION: 12
     JAVA_VERSION: 14
     JVM_IMPL: hotspot
+    MVN_VERSION: 3.5.2
   - POSTGRESQL_VERSION: 12
     JAVA_VERSION: 14
     JVM_IMPL: openj9
+    MVN_VERSION: 3.6.3
   - POSTGRESQL_VERSION: 12
     JAVA_VERSION: 11
     JVM_IMPL: hotspot
+    MVN_VERSION: 3.6.3
   - POSTGRESQL_VERSION: 12
     JAVA_VERSION: 9
     JVM_IMPL: hotspot
+    MVN_VERSION: 3.6.3
   - POSTGRESQL_VERSION: 10
     JAVA_VERSION: 14
     JVM_IMPL: hotspot
+    MVN_VERSION: 3.6.3
   - POSTGRESQL_VERSION: 9.5
     JAVA_VERSION: 14
     JVM_IMPL: hotspot
+    MVN_VERSION: 3.6.3
 
 jobs:
   include:
@@ -34,18 +40,21 @@ jobs:
         - POSTGRESQL_VERSION: 11
           JAVA_VERSION: 14
           JVM_IMPL: hotspot
+          MVN_VERSION: 3.6.3
     - os: osx
       arch: amd64
       env:
         - POSTGRESQL_VERSION: 10
           JAVA_VERSION: 14
           JVM_IMPL: hotspot
+          MVN_VERSION: 3.6.3
     - os: osx
       arch: amd64
       env:
         - POSTGRESQL_VERSION: 9.5
           JAVA_VERSION: 14
           JVM_IMPL: hotspot
+          MVN_VERSION: 3.6.3
 
 cache:
   directories:
@@ -64,6 +73,13 @@ before_install: |
 
   . "$installJdk" --url "$javaUrl"
 
+  mvnUrl=https://archive.apache.org/dist/maven/maven-3
+  mvnUrl="$mvnUrl/$MVN_VERSION/binaries/apache-maven-$MVN_VERSION-bin.tar.gz"
+
+  wget "$mvnUrl" && tar xzf "apache-maven-$MVN_VERSION-bin.tar.gz"
+  mvn="./apache-maven-$MVN_VERSION/bin/mvn"
+  "$mvn" --version
+
   . .travis/travis_install_postgresql.sh
 
 install: |
@@ -76,7 +92,7 @@ install: |
   fi
   libjvm=$(find "$JAVA_HOME" -mindepth 2 -name $libjvm_name | head -n 1)
 
-  mvn clean install --batch-mode \
+  "$mvn" clean install --batch-mode \
    -Dpgsql.pgconfig="$pgConfig" \
    -Dpljava.libjvmdefault="$libjvm" \
    -Psaxon-examples -Ppgjdbc-ng \
