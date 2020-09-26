@@ -80,7 +80,7 @@ before_install: |
     }
   }
 
-  . "$installJdk" --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
+  . "$installJdk" --silent --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
 
   [[ $TRAVIS_OS_NAME == osx ]] && {
     echo ls -l jdk:
