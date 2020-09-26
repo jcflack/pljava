@@ -72,14 +72,14 @@ before_install: |
   }
 
   [[ $JAVA_VERSION == 9 ]] && certs=--cacerts || unset certs
-  [[ $TRAVIS_OS_NAME == osx ]] && tgt=--target=jdk || unset tgt
+  [[ $TRAVIS_OS_NAME == osx ]] && tgt='--target jdk' || unset tgt
 
-  . "$installJdk" --url "$javaUrl" ${certs+"$certs"} ${tgt+"$tgt"} --verbose
+  . "$installJdk" --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
 
   mvnUrl=https://archive.apache.org/dist/maven/maven-3
   mvnUrl="$mvnUrl/$MVN_VERSION/binaries/apache-maven-$MVN_VERSION-bin.tar.gz"
 
-  wget "$mvnUrl" && tar xzf "apache-maven-$MVN_VERSION-bin.tar.gz"
+  wget --no-verbose "$mvnUrl" && tar xzf "apache-maven-$MVN_VERSION-bin.tar.gz"
   mvn="./apache-maven-$MVN_VERSION/bin/mvn"
   "$mvn" --version
 
