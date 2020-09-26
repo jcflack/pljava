@@ -75,9 +75,10 @@ before_install: |
   [[ $TRAVIS_OS_NAME == osx ]] && tgt='--target jdk' || unset tgt
 
   [[ $TRAVIS_OS_NAME == osx ]] && {
-    echo About to run \'which gtar\'
-    which gtar
-    echo Just ran \'which gtar\'
+    brew install gnu-tar
+    function tar {
+      gtar "$@"
+    }
   }
 
   . "$installJdk" --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
