@@ -74,14 +74,13 @@ before_install: |
   [[ $JAVA_VERSION == 9 ]] && certs=--cacerts || unset certs
 
   [[ $TRAVIS_OS_NAME == osx ]] && {
-    patch "$installJdk" <<\EndOfPatch
-  --- install-jdk.sh
-  +++ install-jdk.sh
-  @@ -257 +257 @@
-  -            target="${workspace}"/$(tar --list ${tar_options} | head -2 | tail -1 | cut -f 2 -d '/' -)/Contents/Home
-  +            target="${workspace}"/$(tar --list ${tar_options} | sed -n '/\/bin\/javac/s///p')
-  EndOfPatch
-
+    printf '%s\n%s\n%s\n%s\n%s\n' \
+      '--- install-jdk.sh' \
+      '+++ install-jdk.sh' \
+      '@@ -257 +257 @@' \
+      '-            target="${workspace}"/$(tar --list ${tar_options} | head -2 | tail -1 | cut -f 2 -d '"'/' -)/Contents/Home" \
+      '+            target="${workspace}"/$(tar --list ${tar_options} | sed -n '"'/\/bin\/javac/s///p')" \
+    | patch "$installJdk"
   }
 
   . "$installJdk" --url "$javaUrl" ${certs+"$certs"}
