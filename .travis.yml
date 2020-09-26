@@ -72,20 +72,18 @@ before_install: |
   }
 
   [[ $JAVA_VERSION == 9 ]] && certs=--cacerts || unset certs
-  [[ $TRAVIS_OS_NAME == osx ]] && tgt='--target jdk' || unset tgt
 
   [[ $TRAVIS_OS_NAME == osx ]] && {
-    function tar {
-      /usr/bin/tar --exclude jfr "$@"
-    }
+    patch "$installJdk" <<EndOfPatch
+  --- install-jdk.sh
+  +++ install-jdk.sh
+  @@ -257 +257 @@
+  -            target="${workspace}"/$(tar --list ${tar_options} | head -2 | tail -1 | cut -f 2 -d '/' -)/Contents/Home
+  +            target="${workspace}"/$(tar --list ${tar_options} | sed -n '/\/bin\/javac/s///p')
+  EndOfPatch
   }
 
-  . "$installJdk" --silent --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
-
-  [[ $TRAVIS_OS_NAME == osx ]] && {
-    echo ls -l jdk:
-    ls -l jdk
-  }
+  . "$installJdk" --url "$javaUrl" ${certs+"$certs"}
 
   mvnUrl=https://archive.apache.org/dist/maven/maven-3
   mvnUrl="$mvnUrl/$MVN_VERSION/binaries/apache-maven-$MVN_VERSION-bin.tar.gz"
