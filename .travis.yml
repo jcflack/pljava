@@ -71,7 +71,9 @@ before_install: |
     installJdk=./install-jdk.sh
   }
 
-  . "$installJdk" --url "$javaUrl"
+  [[ $JAVA_VERSION == 9 ]] && certs=--cacerts || unset certs
+
+  . "$installJdk" --url "$javaUrl" ${certs+"$certs"} --verbose
 
   mvnUrl=https://archive.apache.org/dist/maven/maven-3
   mvnUrl="$mvnUrl/$MVN_VERSION/binaries/apache-maven-$MVN_VERSION-bin.tar.gz"
