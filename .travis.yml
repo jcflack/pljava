@@ -1,7 +1,6 @@
 language: minimal
 os:
   - linux
-  - osx
 arch:
   - amd64
   - ppc64le
@@ -28,8 +27,6 @@ env:
     JVM_IMPL: hotspot
 
 jobs:
-  exclude:
-    - os: osx
   include:
     - os: osx
       arch: amd64
@@ -60,11 +57,12 @@ before_install: |
   javaUrl="$javaUrl/${TRAVIS_CPU_ARCH//amd64/x64}/jdk"
   javaUrl="$javaUrl/$JVM_IMPL/normal/adoptopenjdk"
 
-  which install-jdk.sh
-  ls /usr/local/bin
-  find /usr -name install-jdk.sh
+  installJdk=$(which install-jdk.sh) || {
+    wget https://raw.githubusercontent.com/sormuras/bach/8c457fd6e46bd9f3f575867dd0c9af1d7edfd5b4/install-jdk.sh
+    installJdk=./install-jdk.sh
+  }
 
-  . install-jdk.sh --url "$javaUrl"
+  . "$installJdk" --url "$javaUrl"
 
   . .travis/travis_install_postgresql.sh
 
