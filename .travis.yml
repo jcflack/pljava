@@ -62,7 +62,7 @@ cache:
 
 before_install: |
   javaUrl=https://api.adoptopenjdk.net/v3/binary/latest
-  javaUrl="$javaUrl/$JAVA_VERSION/ga/$TRAVIS_OS_NAME"
+  javaUrl="$javaUrl/$JAVA_VERSION/ga/${TRAVIS_OS_NAME//osx/mac}"
   javaUrl="$javaUrl/${TRAVIS_CPU_ARCH//amd64/x64}/jdk"
   javaUrl="$javaUrl/$JVM_IMPL/normal/adoptopenjdk"
 
@@ -118,9 +118,9 @@ script: |
     tail -n 1
   )
 
-  sudo java -Dpgconfig="$pgConfig" -jar "$packageJar"
+  sudo "$JAVA_HOME"/bin/java -Dpgconfig="$pgConfig" -jar "$packageJar"
 
-  jshell \
+  "$JAVA_HOME"/bin/jshell \
     -execution local \
     "-J--class-path=$packageJar:$jdbcJar" \
     "--class-path=$packageJar" \
@@ -128,7 +128,7 @@ script: |
     "-J-Dpgconfig=$pgConfig" \
     "-J-Dcom.impossibl.shadow.io.netty.noUnsafe=true" \
     "-J-DmavenRepo=$mavenRepo" \
-    "-J-DsaxonVer=$saxonVer" - <<\ENDJSHELL
+    "-J-DsaxonVer=$saxonVer" - <<\ENDJSHELL && # continues after here document
 
   boolean succeeding = false; // begin pessimistic
 
@@ -242,3 +242,4 @@ script: |
   succeeding &= (0 == results.get("ng"));
   System.exit(succeeding ? 0 : 1)
   ENDJSHELL
+  : travis wants something after the end of the here document
