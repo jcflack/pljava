@@ -82,6 +82,11 @@ before_install: |
 
   . "$installJdk" --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
 
+  [[ $TRAVIS_OS_NAME == osx ]] && {
+    echo ls -l jdk:
+    ls -l jdk
+  }
+
   mvnUrl=https://archive.apache.org/dist/maven/maven-3
   mvnUrl="$mvnUrl/$MVN_VERSION/binaries/apache-maven-$MVN_VERSION-bin.tar.gz"
 
