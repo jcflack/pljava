@@ -72,7 +72,7 @@ before_install: |
   }
 
   [[ $JAVA_VERSION == 9 ]] && certs=--cacerts || unset certs
-
+  [[ $TRAVIS_OS_NAME == osx ]] && set -vx
   [[ $TRAVIS_OS_NAME == osx ]] && {
     patch "$installJdk" <<EndOfPatch
   --- install-jdk.sh
