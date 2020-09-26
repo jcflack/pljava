@@ -61,7 +61,8 @@ before_install: |
   javaUrl="$javaUrl/$JVM_IMPL/normal/adoptopenjdk"
 
   which install-jdk.sh
-  ls . ~ bin ~/bin
+  ls /usr/local/bin
+  find /usr -name install-jdk.sh
 
   . install-jdk.sh --url "$javaUrl"
 
