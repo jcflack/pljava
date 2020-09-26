@@ -15,22 +15,22 @@ env:
 #   JAVA_VERSION: 14
 #   JVM_IMPL: openj9
 #   MVN_VERSION: 3.6.3
-  - POSTGRESQL_VERSION: 12
-    JAVA_VERSION: 11
-    JVM_IMPL: hotspot
-    MVN_VERSION: 3.6.3
-  - POSTGRESQL_VERSION: 12
-    JAVA_VERSION: 9
-    JVM_IMPL: hotspot
-    MVN_VERSION: 3.6.3
-  - POSTGRESQL_VERSION: 10
-    JAVA_VERSION: 14
-    JVM_IMPL: hotspot
-    MVN_VERSION: 3.6.3
-  - POSTGRESQL_VERSION: 9.5
-    JAVA_VERSION: 14
-    JVM_IMPL: hotspot
-    MVN_VERSION: 3.6.3
+# - POSTGRESQL_VERSION: 12
+#   JAVA_VERSION: 11
+#   JVM_IMPL: hotspot
+#   MVN_VERSION: 3.6.3
+# - POSTGRESQL_VERSION: 12
+#   JAVA_VERSION: 9
+#   JVM_IMPL: hotspot
+#   MVN_VERSION: 3.6.3
+# - POSTGRESQL_VERSION: 10
+#   JAVA_VERSION: 14
+#   JVM_IMPL: hotspot
+#   MVN_VERSION: 3.6.3
+# - POSTGRESQL_VERSION: 9.5
+#   JAVA_VERSION: 14
+#   JVM_IMPL: hotspot
+#   MVN_VERSION: 3.6.3
 
 jobs:
   include:
@@ -73,6 +73,8 @@ before_install: |
 
   [[ $JAVA_VERSION == 9 ]] && certs=--cacerts || unset certs
   [[ $TRAVIS_OS_NAME == osx ]] && tgt='--target jdk' || unset tgt
+
+  [[ $TRAVIS_OS_NAME == osx ]] && which gtar
 
   . "$installJdk" --url "$javaUrl" ${certs+"$certs"} ${tgt+$tgt}
 
