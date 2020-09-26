@@ -37,7 +37,7 @@ else
         sudo mv ../pgdg.list /etc/apt/sources.list.d/
         wget --quiet -O - https://apt.postgresql.org/pub/repos/apt/ACCC4CF8.asc | sudo apt-key add -
         sudo apt-get -qq update
-        sudo apt-get -qq install "postgresql-${POSTGRESQL_VERSION}" "postgresql-server-dev-${POSTGRESQL_VERSION}" libecpg-dev libkrb5-dev
+        sudo RUNLEVEL=1 apt-get -qq install "postgresql-${POSTGRESQL_VERSION}" "postgresql-server-dev-${POSTGRESQL_VERSION}" libecpg-dev libkrb5-dev
         pgConfig=pg_config
     fi
 fi
