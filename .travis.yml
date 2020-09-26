@@ -5,7 +5,6 @@ arch:
   - amd64
   - ppc64le
 dist: bionic
-osx_image: xcode11
 env:
   - POSTGRESQL_VERSION: 12
     JAVA_VERSION: 14
@@ -35,6 +34,7 @@ env:
 jobs:
   include:
     - os: osx
+      osx_image: xcode11
       arch: amd64
       env:
         - POSTGRESQL_VERSION: 11
@@ -42,6 +42,7 @@ jobs:
           JVM_IMPL: hotspot
           MVN_VERSION: 3.6.3
     - os: osx
+      osx_image: xcode11
       arch: amd64
       env:
         - POSTGRESQL_VERSION: 10
@@ -49,6 +50,7 @@ jobs:
           JVM_IMPL: hotspot
           MVN_VERSION: 3.6.3
     - os: osx
+      osx_image: xcode11
       arch: amd64
       env:
         - POSTGRESQL_VERSION: 9.5
