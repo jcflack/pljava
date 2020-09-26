@@ -75,9 +75,8 @@ before_install: |
   [[ $TRAVIS_OS_NAME == osx ]] && tgt='--target jdk' || unset tgt
 
   [[ $TRAVIS_OS_NAME == osx ]] && {
-    brew install gnu-tar
     function tar {
-      gtar "$@"
+      /usr/bin/tar --exclude jfr "$@"
     }
   }
 
