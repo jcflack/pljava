@@ -60,6 +60,8 @@ before_install: |
   javaUrl="$javaUrl/${TRAVIS_CPU_ARCH//amd64/x64}/jdk"
   javaUrl="$javaUrl/$JVM_IMPL/normal/adoptopenjdk"
 
+  ls . ~ bin ~/bin
+
   . install-jdk.sh --url "$javaUrl"
 
   . .travis/travis_install_postgresql.sh
