@@ -754,7 +754,14 @@ static void initsequencer(enum initstage is, bool tolerant)
 					"the working settings are saved, exit this session, and "
 					"in a new session, either: "
 					"1. if committed, run "
-					"\"CREATE EXTENSION pljava FROM unpackaged\", or 2. "
+#if PG_VERSION_NUM < 130000
+					"\"CREATE EXTENSION pljava FROM unpackaged\""
+#else
+					"\"CREATE EXTENSION pljava VERSION unpackaged\", "
+					"then (after starting another new session) "
+					"\"ALTER EXTENSION pljava UPDATE\""
+#endif
+					", or 2. "
 					"if rolled back, simply \"CREATE EXTENSION pljava\" again."
 					)));
 			}
@@ -1092,7 +1099,11 @@ static jint JNICALL my_vfprintf(FILE* fp, const char* format, va_list args)
 			}
 			ereport(INFO, (
 				errmsg_internal(cap_format, lastlive, lastcap),
+#if PG_VERSION_NUM < 90100
+				errdetail("%s", detail),
+#else
 				errdetail_internal("%s", detail),
+#endif
 				errhint(
 					"To pinpoint location, set a breakpoint on this ereport "
 					"and follow stacktrace to a functionExit(), its caller "
