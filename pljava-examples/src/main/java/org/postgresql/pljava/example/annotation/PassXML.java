@@ -224,7 +224,7 @@ public class PassXML implements SQLData
 
 	static Map<String,Templates> s_tpls = new HashMap<>();
 
-	static Map<String,Schema> s_schemas = new HashMap<String,Schema>();
+	static Map<String,Schema> s_schemas = new HashMap<>();
 
 	@Function(schema="javatest", implementor="postgresql_xml")
 	public static String inXMLoutString(SQLXML in) throws SQLException
