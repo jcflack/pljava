@@ -27,6 +27,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import static java.util.concurrent.Executors.privilegedCallable;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
@@ -294,8 +295,8 @@ public interface VarlenaWrapper extends Closeable
 				catch ( Exception e )
 				{
 					throw new SQLException(
-						"Error verifying variable-length input data, " +
-						"not otherwise provided for", "XX000", e);
+						"Exception verifying variable-length data: " +
+						e.getMessage(), "XX000", e);
 				}
 				finally
 				{
@@ -938,18 +939,11 @@ public interface VarlenaWrapper extends Closeable
 		@Override
 		public final Void call() throws Exception
 		{
-			InputStream is = null;
-			try
+			try ( InputStream is = new MarkableSequenceInputStream(m_queue) )
 			{
-				is = new MarkableSequenceInputStream(m_queue);
 				verify(is);
+				return null;
 			}
-			finally
-			{
-				if ( null != is )
-					is.close();
-			}
-			return null;
 		}
 
 		/**
@@ -1037,7 +1031,9 @@ public interface VarlenaWrapper extends Closeable
 			{
 				if ( 1 == m_latch.getCount() )
 				{
-					m_future = LazyExecutorService.INSTANCE.submit(this);
+					m_future =
+						LazyExecutorService.INSTANCE
+							.submit(privilegedCallable(this));
 					m_latch.countDown();
 				}
 			}
@@ -1139,8 +1135,8 @@ public interface VarlenaWrapper extends Closeable
 				if ( t instanceof RuntimeException )
 					throw (RuntimeException) t;
 				throw new SQLException(
-					"Exception verifying variable-length data, not " +
-					"otherwise provided for", "XX000", exce);
+					"Exception verifying variable-length data: " +
+					exce.getMessage(), "XX000", exce);
 			}
 
 			if ( ! m_queue.isEmpty() )

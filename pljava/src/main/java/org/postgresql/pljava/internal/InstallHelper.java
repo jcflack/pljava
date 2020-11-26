@@ -14,7 +14,12 @@ package org.postgresql.pljava.internal;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.IOException;
+import java.net.URL;
+import java.net.MalformedURLException;
 import java.nio.charset.Charset;
+import java.security.NoSuchAlgorithmException;
+import java.security.Policy;
+import java.security.Security;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
@@ -25,14 +30,17 @@ import java.sql.SQLNonTransientException;
 import java.sql.Savepoint;
 import java.sql.Statement;
 import java.text.ParseException;
-import java.util.Scanner;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.sql.Types.VARCHAR;
 
 import org.postgresql.pljava.jdbc.SQLUtils;
 import org.postgresql.pljava.management.SQLDeploymentDescriptor;
+import org.postgresql.pljava.policy.TrialPolicy;
 import static org.postgresql.pljava.annotation.processing.DDRWriter.eQuote;
+import static org.postgresql.pljava.sqlgen.Lexicals.Identifier.Simple;
 
 /**
  * Group of methods intended to streamline the PL/Java installation/startup
@@ -52,6 +60,7 @@ public class InstallHelper
 		String nativeVer, String serverBuiltVer, String serverRunningVer,
 		String user, String dbname, String clustername,
 		String datadir, String libdir, String sharedir, String etcdir)
+		throws SQLException
 	{
 		String implVersion =
 			InstallHelper.class.getModule().getDescriptor().rawVersion().get();
@@ -121,6 +130,13 @@ public class InstallHelper
 			System.clearProperty(encodingKey);
 		}
 
+		/* so it can be granted permissions in the pljava policy */
+		System.setProperty( "org.postgresql.pljava.codesource",
+			InstallHelper.class.getProtectionDomain().getCodeSource()
+				.getLocation().toString());
+
+		setPolicyURLs();
+
 		/*
 		 * Construct the strings announcing the versions in use.
 		 */
@@ -137,6 +153,21 @@ public class InstallHelper
 		String vmVer = System.getProperty( "java.vm.version");
 		String vmInfo = System.getProperty( "java.vm.info");
 
+		try
+		{
+			new URL("sqlj:x"); // sqlj: scheme must exist before reading policy
+		}
+		catch ( MalformedURLException e )
+		{
+			throw new SecurityException(
+				"failed to create sqlj: URL scheme needed for security policy",
+				e);
+		}
+
+		setTrialPolicyIfSpecified();
+
+		System.setSecurityManager( new SecurityManager());
+
 		StringBuilder sb = new StringBuilder();
 		sb.append( "PL/Java native code (").append( nativeVer).append( ")\n");
 		sb.append( "PL/Java common code (").append( implVersion).append( ")\n");
@@ -148,6 +179,103 @@ public class InstallHelper
 			sb.append( ", ").append( vmInfo);
 		sb.append( ')');
 		return sb.toString();
+	}
+
+	/**
+	 * Set the URLs to be read by Java's Policy implementation according to
+	 * pljava.policy_urls. That is a {@code GUC_LIST}-formatted config variable
+	 * where each element can be a plain URL, or a URL prefixed with {@code n=}
+	 * to set the index of the URL to be set or replaced to <em>n</em>.
+	 * If no <em>n</em> is specified, the index following the last one set will
+	 * be used; if the <em>first</em> URL in the list has no <em>n</em>, it will
+	 * be placed at index 2 (after the presumed JRE installed policy at index
+	 * 1).
+	 *<p>
+	 * An entry with nothing after the {@code =} causes that and subsequent URL
+	 * positions not to be processed, in case they had been set in the
+	 * systemwide {@code java.security} file. As there is not actually a way to
+	 * delete a security property, the code will simply replace any
+	 * {@code policy.url.n} entries found at that index and higher with copies
+	 * of the URL at the immediately preceding index.
+	 */
+	private static void setPolicyURLs()
+	throws SQLException
+	{
+		/* This index is incremented before setting each specified policy URL.
+		 * Initializing it to 1 means the first URL set (if it does not specify
+		 * an index) will be at 2, following the JRE's installed policy. Any URL
+		 * entry can begin with n= in order to set URL number n instead (and
+		 * any that follow will be in sequence after n, unless another n= is
+		 * used).
+		 */
+		int urlIndex = 1;
+
+		int stopIndex = -1;
+
+		Pattern p = Pattern.compile( "^(?:(\\d++)?+=)?+");
+
+		String prevURL = null;
+		for (Simple u : Backend.getListConfigOption( "pljava.policy_urls"))
+		{
+			if ( -1 != stopIndex )
+				throw new SQLNonTransientException(
+					"stop (=) entry must be last in pljava.policy_urls",
+					"F0000");
+			++ urlIndex;
+			String s = u.nonFolded();
+			Matcher m = p.matcher(s);
+			if ( m.find() )
+			{
+				s = s.substring(m.end());
+				String i = m.group(1);
+				if ( null != i )
+					urlIndex = Integer.parseInt(i);
+				if ( s.isEmpty() )
+					stopIndex = urlIndex;
+			}
+			if ( urlIndex < 1 )
+				throw new SQLNonTransientException(
+					"index (n=) must be >= 1 in pljava.policy_urls",
+					"F0000");
+			int prevIndex = urlIndex - 1;
+			if ( urlIndex > 1 )
+			{
+				prevURL = Security.getProperty( "policy.url." + prevIndex);
+				if ( null == prevURL )
+					throw new SQLNonTransientException(String.format(
+						"URL at %d in pljava.policy_urls follows an unset URL",
+						urlIndex), "F0000");
+			}
+			if ( -1 != stopIndex )
+				continue; /* should be last, but resume loop to make sure */
+			Security.setProperty( "policy.url." + urlIndex, s);
+		}
+		if ( -1 == stopIndex )
+			return;
+
+		while ( null != Security.getProperty( "policy.url." + stopIndex) )
+		{
+			Security.setProperty( "policy.url." + stopIndex, prevURL);
+			++ stopIndex;
+		}
+	}
+
+	private static void setTrialPolicyIfSpecified() throws SQLException
+	{
+		String trialURI = System.getProperty(
+			"org.postgresql.pljava.policy.trial");
+
+		if ( null == trialURI )
+			return;
+
+		try
+		{
+			Policy.setPolicy( new TrialPolicy( trialURI));
+		}
+		catch ( NoSuchAlgorithmException e )
+		{
+			throw new SQLException(e.getMessage(), e);
+		}
 	}
 
 	public static void groundwork(
@@ -563,6 +691,11 @@ public class InstallHelper
 		UNREL20040120  ("5e4131738cd095b7ff6367d64f809f6cec6a7ba7"),
 		EMPTY          (null);
 
+		static final SchemaVariant REL_1_6_1       = REL_1_5_0;
+		static final SchemaVariant REL_1_6_0       = REL_1_5_0;
+
+		static final SchemaVariant REL_1_5_7       = REL_1_5_0;
+		static final SchemaVariant REL_1_5_6       = REL_1_5_0;
 		static final SchemaVariant REL_1_5_5       = REL_1_5_0;
 		static final SchemaVariant REL_1_5_4       = REL_1_5_0;
 		static final SchemaVariant REL_1_5_3       = REL_1_5_0;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2016 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2020 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -78,8 +78,26 @@ category</a>
 	 * {@link org.postgresql.pljava.ResultSetProvider ResultSetProvider},
 	 * or can be used to specify the return type of any function if the
 	 * compiler hasn't inferred it correctly.
+	 *<p>
+	 * Only one of {@code type} or {@code out} may appear.
 	 */
 	String type() default "";
+
+	/**
+	 * The result column names and types of a composite-returning function.
+	 *<p>
+	 * This is for a function defining its own one-off composite type
+	 * (declared with {@code OUT} parameters). If the function returns some
+	 * composite type known to the catalog, simply use {@code type} and the name
+	 * of that type.
+	 *<p>
+	 * Each element is a name and a type specification, separated by whitespace.
+	 * An element that begins with whitespace declares an output column with no
+	 * name, only a type. The name is an ordinary SQL identifier; if it would
+	 * be quoted in SQL, naturally each double-quote must be represented as
+	 * {@code \"} in Java.
+	 */
+	String[] out() default {};
 
 	/**
 	 * The name of the function. This is optional. The default is
@@ -93,15 +111,23 @@ category</a>
 	String schema() default "";
 
 	/**
+	 * Whether PostgreSQL should gather trailing arguments into an array that
+	 * will be bound to the last (non-output) Java parameter (which must have an
+	 * array type).
+	 * Appeared in PostgreSQL 8.4.
+	 */
+	boolean variadic() default false;
+
+	/**
 	 * Estimated cost in units of cpu_operator_cost.
-	 *
+	 *<p>
 	 * If left unspecified (-1) the backend's default will apply.
 	 */
 	int cost() default -1;
 
 	/**
 	 * Estimated number of rows returned (only for functions returning set).
-	 *
+	 *<p>
 	 * If left unspecified (-1) the backend's default will apply.
 	 */
 	int rows() default -1;
@@ -129,7 +155,7 @@ category</a>
 	
 	/**
 	 * What the query optimizer is allowed to assume about this function.
-	 *
+	 *<p>
 	 * IMMUTABLE describes a pure function whose return will always be the same
 	 * for the same parameter values, with no side effects and no dependency on
 	 * anything in the environment. STABLE describes a function that has no
@@ -147,8 +173,26 @@ category</a>
 	 */
 	Trust trust() default Trust.SANDBOXED;
 
+	/**
+	 * The name of the PostgreSQL procedural language to which this function
+	 * should be declared, as an alternative to specifying {@link #trust trust}.
+	 *<p>
+	 * Ordinarily, PL/Java installs two procedural languages, {@code java} and
+	 * {@code javau}, and a function is declared in one or the other by giving
+	 * {@code trust} the value {@code SANDBOXED} or {@code UNSANDBOXED},
+	 * respectively. It is possible to declare other named procedural languages
+	 * sharing PL/Java's handler functions, and assign customized permissions
+	 * to them in {@code pljava.policy}. A function can be declared in the
+	 * specific language named with this element.
+	 *<p>
+	 * It is an error to specify both {@code language} and {@code trust} in
+	 * the same annotation.
+	 */
+	String language() default "";
+
 	/** 
-	 * Whether the function is UNSAFE to use in any parallel query plan at all
+	 * Whether the function is <a id='parallel'>UNSAFE</a> to use in any
+	 * parallel query plan at all
 	 * (the default), or avoids all disqualifying operations and so is SAFE to
 	 * execute anywhere in a parallel plan, or, by avoiding <em>some</em> such
 	 * operations, may appear in parallel plans but RESTRICTED to execute only
@@ -159,9 +203,9 @@ category</a>
 	 *<p>
 	 * For much more on the practicalities of parallel query and PL/Java,
 	 * please see <a href=
-'../../../../../../use/parallel.html'>the users' guide</a>.
+'../../../../../../../use/parallel.html'>the users' guide</a>.
 	 *<p>
-	 * Appeared in 9.6.
+	 * Appeared in PostgreSQL 9.6.
 	 */
 	Parallel parallel() default Parallel.UNSAFE;
 	
@@ -187,7 +231,7 @@ category</a>
 	 * configuration_parameter FROM CURRENT. The latter will ensure that the
 	 * function executes with the same setting for configuration_parameter that
 	 * was in effect when the function was created.
-	 * 
+	 *<p>
 	 * Appeared in PostgreSQL 8.3.
 	 */
 	String[] settings() default {};

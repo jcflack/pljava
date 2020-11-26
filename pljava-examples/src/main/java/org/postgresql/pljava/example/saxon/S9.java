@@ -58,30 +58,33 @@ import static javax.xml.XMLConstants.XML_NS_PREFIX;
 import static javax.xml.XMLConstants.XMLNS_ATTRIBUTE_NS_URI;
 import static javax.xml.XMLConstants.XMLNS_ATTRIBUTE;
 
+import net.sf.saxon.event.Receiver;
+
 import net.sf.saxon.lib.ConversionRules;
 import net.sf.saxon.lib.NamespaceConstant;
 
 import static net.sf.saxon.om.NameChecker.isValidNCName;
-import net.sf.saxon.om.SequenceIterator;
 
-import net.sf.saxon.query.QueryResult;
 import net.sf.saxon.query.StaticQueryContext;
 
 import net.sf.saxon.regex.RegexIterator;
 import net.sf.saxon.regex.RegularExpression;
 
+import net.sf.saxon.s9api.Destination;
 import net.sf.saxon.s9api.DocumentBuilder;
 import net.sf.saxon.s9api.ItemType;
 import net.sf.saxon.s9api.ItemTypeFactory;
 import net.sf.saxon.s9api.OccurrenceIndicator;
 import net.sf.saxon.s9api.Processor;
 import net.sf.saxon.s9api.QName;
+import net.sf.saxon.s9api.SAXDestination;
 import net.sf.saxon.s9api.SequenceType;
 import static net.sf.saxon.s9api.SequenceType.makeSequenceType;
 import net.sf.saxon.s9api.XdmAtomicValue;
 import static net.sf.saxon.s9api.XdmAtomicValue.makeAtomicValue;
 import net.sf.saxon.s9api.XdmEmptySequence;
 import net.sf.saxon.s9api.XdmItem;
+import net.sf.saxon.s9api.XdmNode;
 import static net.sf.saxon.s9api.XdmNodeKind.DOCUMENT;
 import net.sf.saxon.s9api.XdmValue;
 import net.sf.saxon.s9api.XdmSequenceIterator;
@@ -93,7 +96,7 @@ import net.sf.saxon.s9api.SaxonApiException;
 
 import net.sf.saxon.trans.XPathException;
 
-import net.sf.saxon.tree.iter.LookaheadIterator;
+import net.sf.saxon.serialize.SerializationProperties;
 
 import net.sf.saxon.type.AtomicType;
 import net.sf.saxon.type.Converter;
@@ -227,7 +230,7 @@ import org.xml.sax.SAXException;
  *	 'let $e := PREMIER_NAME
  *	  return if ( empty($e) )then $DPREMIER else $e'
  *	]) AS (
- *	 id int, ordinality int, "COUNTRY_NAME" text, country_id text,
+ *	 id int, ordinality int8, "COUNTRY_NAME" text, country_id text,
  *	 size_sq_km float, size_other text, premier_name text
  *	);
  *</pre>
@@ -285,10 +288,10 @@ import org.xml.sax.SAXException;
  * XQuery regular-expression methods provided here.
  * @author Chapman Flack
  */
-public class S9 implements ResultSetProvider
+public class S9 implements ResultSetProvider.Large
 {
 	private S9(
-		XdmSequenceIterator xsi,
+		XdmSequenceIterator<XdmItem> xsi,
 		XQueryEvaluator[] columnXQEs,
 		SequenceType[] columnStaticTypes,
 		XMLBinary enc)
@@ -300,7 +303,7 @@ public class S9 implements ResultSetProvider
 		m_xmlbinary = enc;
 	}
 
-	final XdmSequenceIterator m_sequenceIterator;
+	final XdmSequenceIterator<XdmItem> m_sequenceIterator;
 	final XQueryEvaluator[] m_columnXQEs;
 	final SequenceType[] m_columnStaticTypes;
 	final SequenceType s_01untypedAtomic = makeSequenceType(
@@ -308,7 +311,6 @@ public class S9 implements ResultSetProvider
 	final AtomizingFunction[] m_atomize;
 	final XMLBinary m_xmlbinary;
 	Binding.Assemblage m_outBindings;
-	XQueryEvaluator m_documentWrap;
 
 	static final Connection s_dbc;
 	static final Processor s_s9p = new Processor(false);
@@ -362,26 +364,6 @@ public class S9 implements ResultSetProvider
 	{
 		static final XQueryCompiler s_xqc = s_s9p.newXQueryCompiler();
 		static final QName s_qEXPR = new QName("EXPR");
-
-		static class DocumentWrap
-		{
-			static final XQueryExecutable INSTANCE;
-
-			static
-			{
-				try
-				{
-					INSTANCE = s_xqc.compile(
-						"declare construction preserve;" +
-						"declare variable $EXPR as item()* external;" +
-						"document{$EXPR}");
-				}
-				catch ( SaxonApiException e )
-				{
-					throw new ExceptionInInitializerError(e);
-				}
-			}
-		}
 
 		static class DocumentWrapUnwrap
 		{
@@ -547,7 +529,8 @@ public class S9 implements ResultSetProvider
 			}
 			ItemType xsbt =
 				mapSQLDataTypeToXMLSchemaDataType(op, enc, Nulls.ABSENT);
-			XdmValue tv = xmlCastAsSequence(v, enc, xsbt);
+			Iterator<XdmItem> tv =
+				xmlCastAsSequence(v, enc, xsbt).iterator();
 			try
 			{
 				target.updateSQLXML(1,
@@ -575,18 +558,13 @@ public class S9 implements ResultSetProvider
 					PredefinedQueryHolders.DocumentWrapUnwrap.INSTANCE.load();
 				xqe.setExternalVariable(PredefinedQueryHolders.s_qEXPR, xv);
 				xv = xqe.evaluate();
-				XdmSequenceIterator si = (XdmSequenceIterator)xv.iterator();
-				if ( ! si.hasNext() )
+				/*
+				 * It's zero-or-one, or XPTY0004 was thrown here.
+				 */
+				if ( 0 == xv.size() )
 				{
 					target.updateNull(1);
 					return true;
-				}
-				xv = si.next();
-				if ( si.hasNext() )
-				{
-					si.close();
-					throw new XPathException(
-						"Atomized sequence has more than one item", "XPTY0004");
 				}
 				XdmAtomicValue av = (XdmAtomicValue)xv;
 				xmlCastAsNonXML(
@@ -661,7 +639,8 @@ public class S9 implements ResultSetProvider
 
 		try
 		{
-			XdmValue x1 = evalXQuery(expression, passing, namespaces);
+			XdmSequenceIterator<XdmItem> x1 =
+				evalXQuery(expression, passing, namespaces);
 			return null == x1 ? null : returnContent(x1, nullOnEmpty);
 		}
 		catch ( SaxonApiException | XPathException e )
@@ -722,11 +701,13 @@ public class S9 implements ResultSetProvider
 			throw new SQLDataException(
 				"XMLEXISTS expression may not be null", "22004");
 
-		XdmValue x1 = evalXQuery(expression, passing, namespaces);
+		XdmSequenceIterator<XdmItem> x1 =
+			evalXQuery(expression, passing, namespaces);
 		if ( null == x1 )
 			return null;
-		if ( null == x1.getUnderlyingValue().head() )
+		if ( ! x1.hasNext() )
 			return false;
+		x1.close();
 		return true;
 	}
 
@@ -734,7 +715,7 @@ public class S9 implements ResultSetProvider
 	 * Implementation factor of XMLEXISTS and XMLQUERY.
 	 * @return null if a context item is passed and its SQL value is null
 	 */
-	private static XdmValue evalXQuery(
+	private static XdmSequenceIterator<XdmItem> evalXQuery(
 		String expression, ResultSet passing, String[] namespaces)
 		throws SQLException
 	{
@@ -754,7 +735,7 @@ public class S9 implements ResultSetProvider
 			 * For now, punt on whether the <XQuery expression> is evaluated
 			 * with XML 1.1 or 1.0 lexical rules....  XXX
 			 */
-			return xqe.evaluate();
+			return xqe.iterator();
 		}
 		catch ( SaxonApiException | XPathException e )
 		{
@@ -763,51 +744,39 @@ public class S9 implements ResultSetProvider
 	}
 
 	/**
-	 * A version of {@code returnContent} that returns XQuery's
-	 * {@code document{{$EXPR}}} applied to <em>x</em> (as {@code $EXPR}).
-	 */
-	private static SQLXML returnContent(XdmValue x, boolean nullOnEmpty)
-	throws SQLException, SaxonApiException, XPathException
-	{
-		XQueryEvaluator xqe =
-			PredefinedQueryHolders.DocumentWrap.INSTANCE.load();
-		return returnContent(x, nullOnEmpty, xqe);
-	}
-
-	/**
-	 * A version of {@code returnContent} that returns the result of an
-	 * arbitrary XQuery evaluator <em>xqe</em> (that declares an external
-	 * variable {@code $EXPR} of type {@code item()*}) applied to <em>x</em>
-	 * (as {@code $EXPR}).
+	 * Perform the final steps of <em>something</em> {@code RETURNING CONTENT},
+	 * with or without {@code nullOnEmpty}.
+	 *<p>
+	 * The effects are to be the same as if the supplied sequence were passed
+	 * as {@code $EXPR} to {@code document{$EXPR}}.
 	 */
 	private static SQLXML returnContent(
-		XdmValue x, boolean nullOnEmpty, XQueryEvaluator xqe)
+		Iterator<XdmItem> x, boolean nullOnEmpty)
 	throws SQLException, SaxonApiException, XPathException
 	{
-		SequenceIterator xs;
-
-		if ( nullOnEmpty )
-		{
-			xs = x.getUnderlyingValue().iterate();
-			if ( 0 == ( SequenceIterator.LOOKAHEAD & xs.getProperties() ) )
-				throw new SQLException(
-				"nullOnEmpty requested and result sequence lacks lookahead",
-					"XX000");
-			if ( ! ((LookaheadIterator)xs).hasNext() )
-			{
-				xs.close();
-				return null;
-			}
-			xs.close();
-		}
-
-		xqe.setExternalVariable(PredefinedQueryHolders.s_qEXPR, x);
-		xs = xqe.evaluate().getUnderlyingValue().iterate();
+		if ( nullOnEmpty  &&  ! x.hasNext() )
+			return null;
 
 		SQLXML rsx = s_dbc.createSQLXML();
-		Result r = rsx.setResult(null);
-		QueryResult.serializeSequence(
-			xs, s_s9p.getUnderlyingConfiguration(), r, new Properties());
+		/*
+		 * Keep this simple by requesting a specific type of Result rather
+		 * than letting PL/Java choose. It happens (though this is a detail of
+		 * the implementation) that SAXResult won't be a bad choice.
+		 */
+		SAXResult sr = rsx.setResult(SAXResult.class);
+		/*
+		 * Michael Kay recommends the following as equivalent to the SQL/XML-
+		 * mandated behavior of evaluating document{$x}.
+		 * https://sourceforge.net/p/saxon/mailman/message/36969060/
+		 */
+		SAXDestination d = new SAXDestination(sr.getHandler());
+		Receiver r = d.getReceiver(
+			s_s9p.getUnderlyingConfiguration().makePipelineConfiguration(),
+			new SerializationProperties());
+		r.open();
+		while ( x.hasNext() )
+			r.append(x.next().getUnderlyingValue());
+		r.close();
 		return rsx;
 	}
 
@@ -834,8 +803,9 @@ public class S9 implements ResultSetProvider
 	 * columns in the column definition list that follows the SQL call to this
 	 * function. This array must not be null. It is allowed for one element (and
 	 * no more than one) to be null, marking the corresponding column to be
-	 * "FOR ORDINALITY" (the column must be of integer, or, ahem, "exact numeric
-	 * with scale zero", type).
+	 * "FOR ORDINALITY" (the column must be of "exact numeric with scale zero"
+	 * type; PostgreSQL supports 64-bit row counters, so {@code int8} is
+	 * recommended).
 	 * @param passing A row value whose columns will be supplied to the query
 	 * as parameters, just as described for
 	 * {@link #xq_ret_content xq_ret_content()}. If a context item is supplied,
@@ -921,9 +891,9 @@ public class S9 implements ResultSetProvider
 			}
 
 			XQueryEvaluator rowXQE = rowXQX.load();
-			XdmSequenceIterator rowIterator;
+			XdmSequenceIterator<XdmItem> rowIterator;
 			if ( storePassedValuesInDynamicContext(rowXQE, rowBindings, true) )
-				rowIterator = (XdmSequenceIterator)
+				rowIterator = (XdmSequenceIterator<XdmItem>)
 					XdmEmptySequence.getInstance().iterator();
 			else
 				rowIterator = rowXQE.iterator();
@@ -935,6 +905,9 @@ public class S9 implements ResultSetProvider
 		}
 	}
 
+	/**
+	 * Called when PostgreSQL has no need for more rows of the tabular result.
+	 */
 	@Override
 	public void close()
 	{
@@ -942,7 +915,8 @@ public class S9 implements ResultSetProvider
 	}
 
 	/**
-	 * Produce and return one row of the {@code XMLTABLE} result table per call.
+	 * <a id='assignRowValues'>Produce and return one row</a> of
+	 * the {@code XMLTABLE} result table per call.
 	 *<p>
 	 * The row expression has already been compiled and its evaluation begun,
 	 * producing a sequence iterator. The column XQuery expressions have all
@@ -1216,7 +1190,7 @@ public class S9 implements ResultSetProvider
 	 * be changed to match a future clarification of the spec.
 	 */
 	@Override
-	public boolean assignRowValues(ResultSet receive, int currentRow)
+	public boolean assignRowValues(ResultSet receive, long currentRow)
 	throws SQLException
 	{
 		if ( 0 == currentRow )
@@ -1233,24 +1207,26 @@ public class S9 implements ResultSetProvider
 				 */
 				if ( null == m_columnXQEs [ i ] )
 					continue;
-				/*
-				 * If the output column type is an XML type (other than
-				 * XML(SEQUENCE), which can be assumed, as PostgreSQL doesn't
-				 * have that type), then the column will just be assigned as by
-				 * returnContent(). Load up a DocumentWrap predefined query, so
-				 * returnContent won't have to do it every time. Assign nothing
-				 * to m_atomize[i]; null there will distinguish this case
-				 * (because the ORDINALITY case will already have been checked).
-				 */
+
 				if ( Types.SQLXML == p.typeJDBC() )
+					continue;
+
+				/*
+				 * Ok, the output column type is non-XML; choose an atomizer,
+				 * either a simple identity if the result type is statically
+				 * known to be zero-or-one atomic, or the long way through the
+				 * general-purpose one. If the type is statically known to be
+				 * the empty sequence (weird, but not impossible), the identity
+				 * atomizer suffices and we're on to the next column.
+				 */
+				OccurrenceIndicator occur = staticType.getOccurrenceIndicator();
+				if ( OccurrenceIndicator.ZERO == occur )
 				{
-					if ( null == m_documentWrap )
-						m_documentWrap =
-							PredefinedQueryHolders.DocumentWrap.INSTANCE.load();
+					m_atomize [ i ] = (v, col) -> v;
 					continue;
 				}
-				/*
-				 * Ok, the output column type is non-XML. If the column
+
+				/* So, it isn't known to be empty. If the column
 				 * expression type isn't known to be atomic, or isn't known to
 				 * be zero-or-one, then the general-purpose atomizer--a trip
 				 * through data(document { ... } / child::node())--must be used.
@@ -1261,9 +1237,9 @@ public class S9 implements ResultSetProvider
 				 *    BUT NO ... Saxon is more likely to find a converter from
 				 * xs:untypedAtomic than from xs:anyAtomicType.
 				 */
-				if ( staticType.getOccurrenceIndicator().allowsMany()
-					|| ! ItemType.ANY_ATOMIC_VALUE.subsumes(
-						staticType.getItemType())
+				ItemType itemType = staticType.getItemType();
+				if ( occur.allowsMany()
+					|| ! ItemType.ANY_ATOMIC_VALUE.subsumes(itemType)
 					/*
 					 * The following tests may be punctilious to a fault. If we
 					 * have a bare Saxon atomic type of either xs:base64Binary
@@ -1277,9 +1253,9 @@ public class S9 implements ResultSetProvider
 					 * succeed) in the cases where the specified, unoptimized
 					 * behavior would be to fail.
 					 */
-					|| ItemType.HEX_BINARY.subsumes(staticType.getItemType())
+					|| ItemType.HEX_BINARY.subsumes(itemType)
 						&& (XMLBinary.HEX != m_xmlbinary)
-					|| ItemType.BASE64_BINARY.subsumes(staticType.getItemType())
+					|| ItemType.BASE64_BINARY.subsumes(itemType)
 						&& (XMLBinary.BASE64 != m_xmlbinary)
 				   )
 				{
@@ -1292,17 +1268,10 @@ public class S9 implements ResultSetProvider
 							docWrapUnwrap.setExternalVariable(
 								PredefinedQueryHolders.s_qEXPR, v);
 							v = docWrapUnwrap.evaluate();
-							XdmSequenceIterator si =
-								(XdmSequenceIterator)v.iterator();
-							if ( ! si.hasNext() )
-								return v;
-							v = si.next();
-							if ( ! si.hasNext() )
-								return v;
-							si.close();
-							throw new XPathException(
-								"Atomized sequence has more than one item " +
-								"(column " + col + ")", "XPTY0004");
+							/*
+							 * It's already zero-or-one, or XPTY0004 was thrown
+							 */
+							return v;
 						};
 					}
 					m_atomize [ i ] = atomizer;
@@ -1320,7 +1289,7 @@ public class S9 implements ResultSetProvider
 					 * We know we'll be getting zero-or-one atomic value, so
 					 * the atomizing function can be the identity.
 					 */
-					 m_atomize [ i ] = (v, col) -> v;
+					m_atomize [ i ] = (v, col) -> v;
 				}
 			}
 		}
@@ -1341,22 +1310,22 @@ public class S9 implements ResultSetProvider
 
 			if ( null == xqe )
 			{
-				receive.updateInt( i, currentRow);
+				receive.updateLong( i, currentRow);
 				continue;
 			}
 
 			try
 			{
 				xqe.setContextItem(it);
-				XdmValue x1 = xqe.evaluate();
 
 				if ( null == atomizer ) /* => result type was found to be XML */
 				{
 					receive.updateSQLXML(
-						i, returnContent(x1, false, m_documentWrap));
+						i, returnContent(xqe.iterator(), false));
 					continue;
 				}
 
+				XdmValue x1 = xqe.evaluate();
 				x1 = atomizer.apply(x1, i);
 
 				/*
@@ -1400,8 +1369,6 @@ public class S9 implements ResultSetProvider
 		XQueryEvaluator xqe, Binding.Assemblage passing, boolean setContextItem)
 		throws SQLException, SaxonApiException
 	{
-		DocumentBuilder dBuilder = s_s9p.newDocumentBuilder();
-
 		/*
 		 * Is there or is there not a context item?
 		 */
@@ -1415,10 +1382,9 @@ public class S9 implements ResultSetProvider
 			if ( null == cve )
 				return true;
 			XdmValue ci;
-			if ( cve instanceof SQLXML ) // XXX support SEQUENCE input someday
+			if ( cve instanceof XdmNode ) // XXX support SEQUENCE input someday
 			{
-				Source src = ((SQLXML)cve).getSource(null);
-				ci = dBuilder.build(src);
+				ci = (XdmNode)cve;
 			}
 			else
 				ci = xmlCastAsSequence(
@@ -1447,10 +1413,9 @@ public class S9 implements ResultSetProvider
 			XdmValue vv;
 			if ( null == v )
 				vv = XdmEmptySequence.getInstance();
-			else if ( v instanceof SQLXML ) // XXX support SEQUENCE someday
+			else if ( v instanceof XdmNode ) // XXX support SEQUENCE someday
 			{
-				Source src = ((SQLXML)v).getSource(null);
-				vv = dBuilder.build(src);
+				vv = (XdmNode)v;
 			}
 			else
 				vv = xmlCastAsSequence(
@@ -1630,6 +1595,7 @@ public class S9 implements ResultSetProvider
 		return xftn;
 	}
 
+	@SuppressWarnings("fallthrough")
 	private static ItemType mapSQLDataTypeToXMLSchemaDataType(
 		Binding b, XMLBinary xmlbinary, Nulls nulls)
 		throws SQLException
@@ -1689,6 +1655,7 @@ public class S9 implements ResultSetProvider
 			return ItemType.FLOAT; // could check P, MINEXP, MAXEXP here.
 		case Types.FLOAT:
 			assert false; // PG should always report either REAL or DOUBLE
+			/*FALLTHROUGH*/
 		case Types.DOUBLE:
 			return ItemType.DOUBLE;
 
@@ -1959,14 +1926,14 @@ public class S9 implements ResultSetProvider
 			rs.updateObject(col, bv.getValue());
 
 		else if ( ItemType.DATE.subsumes(xt) )
-			rs.updateObject(col, LocalDate.parse(bv.getStringValue()));
+			rs.updateObject(col, bv.getLocalDate());
 		else if ( ItemType.DATE_TIME.subsumes(xt) )
 		{
 			if ( ((CalendarValue)bv.getUnderlyingValue()).hasTimezone() )
-				rs.updateObject(col, OffsetDateTime.parse(bv.getStringValue()));
+				rs.updateObject(col, bv.getOffsetDateTime());
 			else
 			{
-				LocalDateTime jv = LocalDateTime.parse(bv.getStringValue());
+				LocalDateTime jv = bv.getLocalDateTime();
 				rs.updateObject(col,
 					Types.TIMESTAMP_WITH_TIMEZONE == p.typeJDBC() ?
 						jv.atOffset(UTC) : jv);
@@ -2046,16 +2013,28 @@ public class S9 implements ResultSetProvider
 			return new XdmAtomicValue((Boolean)dv);
 
 		if ( ItemType.DATE.equals(xst) )
+		{
+			if ( dv instanceof LocalDate )
+				return new XdmAtomicValue((LocalDate)dv);
 			return new XdmAtomicValue(dv.toString(), xst);
+		}
 
 		if ( ItemType.TIME.equals(xst) )
 			return new XdmAtomicValue(dv.toString(), xst);
 
 		if ( ItemType.DATE_TIME.equals(xst) )
+		{
+			if ( dv instanceof LocalDateTime )
+				return new XdmAtomicValue((LocalDateTime)dv);
 			return new XdmAtomicValue(dv.toString(), xst);
+		}
 
 		if ( ItemType.DATE_TIME_STAMP.equals(xst) )
+		{
+			if ( dv instanceof OffsetDateTime )
+				return new XdmAtomicValue((OffsetDateTime)dv);
 			return new XdmAtomicValue(dv.toString(), xst);
+		}
 
 		if ( ItemType.DURATION.equals(xst) )
 			return new XdmAtomicValue(toggleIntervalRepr((String)dv), xst);
@@ -2196,7 +2175,10 @@ public class S9 implements ResultSetProvider
 			 * provides that a SQLXML object should be returned, and that should
 			 * happen in a future major PL/Java release, but for now, the plain
 			 * getObject will still return String, so it is also necessary to
-			 * ask for the SQLXML type explicitly.
+			 * ask for the SQLXML type explicitly. In fact, we will ask for
+			 * XdmNode, as it might be referred to more than once (if a
+			 * parameter), and a SQLXML can't be read more than once, nor would
+			 * there be any sense in building an XdmNode from it more than once.
 			 */
 			switch ( typeJDBC() )
 			{
@@ -2211,7 +2193,7 @@ public class S9 implements ResultSetProvider
 			case Types.TIMESTAMP_WITH_TIMEZONE:
 				return setValueJDBC(implValueJDBC(OffsetDateTime.class));
 			case Types.SQLXML:
-				return setValueJDBC(implValueJDBC(SQLXML.class));
+				return setValueJDBC(implValueJDBC(XdmNode.class));
 			default:
 			}
 			return setValueJDBC(implValueJDBC());
@@ -2425,6 +2407,9 @@ public class S9 implements ResultSetProvider
 			ContextItem contextItem = null;
 			Map<String,Binding.Parameter> n2b = new HashMap<>();
 
+			if ( 0 < nParams )
+				m_dBuilder = s_s9p.newDocumentBuilder();
+
 			for ( int i = 1; i <= nParams; ++i )
 			{
 				String label = m_rsmd.getColumnLabel(i);
@@ -2468,6 +2453,7 @@ public class S9 implements ResultSetProvider
 		 * @throws SQLException if numbers of columns and expressions don't
 		 * match, or there is an ordinality column and its type is not suitable.
 		 */
+		@SuppressWarnings("fallthrough")
 		BindingsFromResultSet(ResultSet rs, XQueryEvaluator[] exprs)
 		throws SQLException
 		{
@@ -2500,6 +2486,7 @@ public class S9 implements ResultSetProvider
 						int scale = p.scale();
 						if ( 0 == scale  ||  -1 == scale )
 							break;
+						/*FALLTHROUGH*/
 					default:
 						throw new SQLSyntaxErrorException(
 							"Column FOR ORDINALITY must have an exact numeric" +
@@ -2513,6 +2500,23 @@ public class S9 implements ResultSetProvider
 
 		private ResultSet m_resultSet;
 		private ResultSetMetaData m_rsmd;
+		DocumentBuilder m_dBuilder;
+
+		<T> T typedValueAtIndex(int idx, Class<T> type) throws SQLException
+		{
+			if ( XdmNode.class != type )
+				return m_resultSet.getObject(idx, type);
+			try
+			{
+				SQLXML sx = m_resultSet.getObject(idx, SQLXML.class);
+				return type.cast(
+					m_dBuilder.build(sx.getSource((Class<Source>)null)));
+			}
+			catch ( SaxonApiException e )
+			{
+				throw new SQLException(e.getMessage(), "10000", e);
+			}
+		}
 
 		class ContextItem extends Binding.ContextItem
 		{
@@ -2542,7 +2546,7 @@ public class S9 implements ResultSetProvider
 
 			protected <T> T implValueJDBC(Class<T> type) throws SQLException
 			{
-				return m_resultSet.getObject(m_idx, type);
+				return typedValueAtIndex(m_idx, type);
 			}
 		}
 
@@ -2626,7 +2630,7 @@ public class S9 implements ResultSetProvider
 
 			protected <T> T implValueJDBC(Class<T> type) throws SQLException
 			{
-				return m_resultSet.getObject(m_idx, type);
+				return typedValueAtIndex(m_idx, type);
 			}
 		}
 	}
@@ -2938,7 +2942,8 @@ public class S9 implements ResultSetProvider
 	}
 
 	/**
-	 * Function form of the ISO SQL {@code <regex like predicate>}.
+	 * Function form of the ISO SQL
+	 * <a id='like_regex'>{@code <regex like predicate>}</a>.
 	 *<p>
 	 * Rewrite the standard form
 	 *<pre>
@@ -2992,7 +2997,8 @@ public class S9 implements ResultSetProvider
 	}
 
 	/**
-	 * Syntax-sugar-free form of the ISO SQL {@code OCCURRENCES_REGEX} function:
+	 * Syntax-sugar-free form of the ISO SQL
+	 * <a id='occurrences_regex'>{@code OCCURRENCES_REGEX}</a> function:
 	 * how many times does a pattern occur in a string?
 	 *<p>
 	 * Rewrite the standard form
@@ -3053,7 +3059,8 @@ public class S9 implements ResultSetProvider
 	}
 
 	/**
-	 * Syntax-sugar-free form of the ISO SQL {@code POSITION_REGEX} function:
+	 * Syntax-sugar-free form of the ISO SQL
+	 * <a id='position_regex'>{@code POSITION_REGEX}</a> function:
 	 * where does a pattern, or part of it, occur in a string?
 	 *<p>
 	 * Rewrite the standard forms
@@ -3140,7 +3147,8 @@ public class S9 implements ResultSetProvider
 	}
 
 	/**
-	 * Syntax-sugar-free form of the ISO SQL {@code SUBSTRING_REGEX} function:
+	 * Syntax-sugar-free form of the ISO SQL
+	 * <a id='substring_regex'>{@code SUBSTRING_REGEX}</a> function:
 	 * return a substring specified by a pattern match in a string.
 	 *<p>
 	 * Rewrite the standard form
@@ -3226,7 +3234,8 @@ public class S9 implements ResultSetProvider
 	}
 
 	/**
-	 * Syntax-sugar-free form of the ISO SQL {@code TRANSLATE_REGEX} function:
+	 * Syntax-sugar-free form of the ISO SQL
+	 * <a id='translate_regex'>{@code TRANSLATE_REGEX}</a> function:
 	 * return a string constructed from the input string by replacing one
 	 * specified occurrence, or all occurrences, of a matching pattern.
 	 *<p>

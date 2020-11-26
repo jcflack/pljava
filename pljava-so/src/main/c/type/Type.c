@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2019 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2020 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -56,6 +56,16 @@ static CoercionPathType fcp(Oid targetTypeId, Oid sourceTypeId,
 
 #if PG_VERSION_NUM < 90500
 #define DomainHasConstraints(x) true
+#endif
+
+#if PG_VERSION_NUM < 110000
+static Oid BOOLARRAYOID;
+static Oid CHARARRAYOID;
+static Oid FLOAT8ARRAYOID;
+static Oid INT8ARRAYOID;
+#if PG_VERSION_NUM < 80400
+static Oid INT2ARRAYOID;
+#endif
 #endif
 
 static HashMap s_typeByOid;
@@ -116,18 +126,12 @@ typedef struct
 	 */
 	MemoryContext spiContext;
 	bool          hasConnected;
-	/*
-	 * Copy of Invocation's 'trusted' flag. In normal calls through the handler,
-	 * the value is known (implicit in which handler entry point was called),
-	 * but that isn't available to the _endOfSetCB, so must be remembered here.
-	 */
-	bool          trusted;
 } CallContextData;
 
 /*
  * Called during evaluation of a set-returning function, at various points after
  * calls into Java code could have instantiated an Invocation, or connected SPI.
- * Does not stash elemType, rowProducer, rowCollector, or trusted; those are all
+ * Does not stash elemType, rowProducer, or rowCollector; those are all
  * unconditionally set in the first-call initialization, and spiContext to zero.
  */
 static void stashCallContext(CallContextData *ctxData)
@@ -155,10 +159,11 @@ static void stashCallContext(CallContextData *ctxData)
  */
 static void _closeIteration(CallContextData* ctxData)
 {
+	jobject dummy;
 	currentInvocation->hasConnected = ctxData->hasConnected;
 	currentInvocation->invocation   = ctxData->invocation;
 
-	Type_closeSRF(ctxData->elemType, ctxData->rowProducer);
+	pljava_Function_vpcInvoke(ctxData->rowProducer, NULL, 0, JNI_TRUE, &dummy);
 	JNI_deleteGlobalRef(ctxData->rowProducer);
 	if(ctxData->rowCollector != 0)
 		JNI_deleteGlobalRef(ctxData->rowCollector);
@@ -192,7 +197,7 @@ static void _endOfSetCB(Datum arg)
 	bool saveInExprCtxCB;
 	CallContextData* ctxData = (CallContextData*)DatumGetPointer(arg);
 	if(currentInvocation == 0)
-		Invocation_pushInvocation(&topCall, ctxData->trusted);
+		Invocation_pushInvocation(&topCall);
 
 	saveInExprCtxCB = currentInvocation->inExprContextCB;
 	currentInvocation->inExprContextCB = true;
@@ -238,6 +243,7 @@ static Type _getCoerce(Type self, Type other, Oid fromOid, Oid toOid,
 	case COERCION_PATH_NONE:
 		elog(ERROR, "no conversion function from (regtype) %d to %d",
 			 fromOid, toOid);
+		pg_unreachable(); /*elog(ERROR is already so marked; what's with gcc?*/
 	case COERCION_PATH_RELABELTYPE:
 		/*
 		 * Binary compatible type. No need for a special coercer.
@@ -250,9 +256,11 @@ static Type _getCoerce(Type self, Type other, Oid fromOid, Oid toOid,
 	case COERCION_PATH_COERCEVIAIO:
 		elog(ERROR, "COERCEVIAIO not implemented from (regtype) %d to %d",
 			 fromOid, toOid);
+		pg_unreachable();
 	case COERCION_PATH_ARRAYCOERCE:
 		elog(ERROR, "ARRAYCOERCE not implemented from (regtype) %d to %d",
 			 fromOid, toOid);
+		pg_unreachable();
 	case COERCION_PATH_FUNC:
 		break;
 	}
@@ -294,7 +302,7 @@ jvalue Type_coerceDatumAs(Type self, Datum value, jclass rqcls)
 	if ( NULL == rqcls  ||  Type_getJavaClass(self) == rqcls )
 		return Type_coerceDatum(self, value);
 
-	rqcname = JNI_callObjectMethod(rqcls, Class_getName);
+	rqcname = JNI_callObjectMethod(rqcls, Class_getCanonicalName);
 	rqcname0 = String_createNTS(rqcname);
 	JNI_deleteLocalRef(rqcname);
 	rqtype = Type_fromJavaType(self->typeId, rqcname0);
@@ -324,7 +332,16 @@ Datum Type_coerceObjectBridged(Type self, jobject object)
 	rqtype = Type_fromJavaType(self->typeId, rqcname0);
 	pfree(rqcname0);
 	if ( ! Type_canReplaceType(rqtype, self) )
-		elog(ERROR, "type bridge failure");
+	{
+		/*
+		 * Ignore the TypeBridge in this one oddball case that results from the
+		 * existence of two Types both mapping Java's byte[].
+		 */
+		if ( BYTEAOID == self->typeId  &&  CHARARRAYOID == rqtype->typeId )
+			rqtype = self;
+		else
+			elog(ERROR, "type bridge failure");
+	}
 	object = JNI_callObjectMethod(object, s_TypeBridge_Holder_payload);
 	return Type_coerceObject(rqtype, object);
 }
@@ -443,7 +460,7 @@ Datum Type_invoke(Type self, Function fn, PG_FUNCTION_ARGS)
 
 Datum Type_invokeSRF(Type self, Function fn, PG_FUNCTION_ARGS)
 {
-	bool hasRow;
+	jobject row;
 	CallContextData* ctxData;
 	FuncCallContext* context;
 	MemoryContext currCtx;
@@ -470,10 +487,10 @@ Datum Type_invokeSRF(Type self, Function fn, PG_FUNCTION_ARGS)
 		 */
 		currCtx = MemoryContextSwitchTo(context->multi_call_memory_ctx);
 
-		/* Call the declared Java function. It returns an instance that can produce
-		 * the rows.
+		/* Call the declared Java function. It returns an instance
+		 * that can produce the rows.
 		 */
-		tmp = Type_getSRFProducer(self, fn);
+		tmp = pljava_Function_refInvoke(fn);
 		if(tmp == 0)
 		{
 			Invocation_assertDisconnect();
@@ -499,7 +516,6 @@ Datum Type_invokeSRF(Type self, Function fn, PG_FUNCTION_ARGS)
 			JNI_deleteLocalRef(tmp);
 		}		
 
-		ctxData->trusted    = currentInvocation->trusted;
 		stashCallContext(ctxData);
 
 		/* Register callback to be called when the function ends
@@ -529,12 +545,12 @@ Datum Type_invokeSRF(Type self, Function fn, PG_FUNCTION_ARGS)
 	currentInvocation->hasConnected = ctxData->hasConnected;
 	currentInvocation->invocation   = ctxData->invocation;
 
-	hasRow = Type_hasNextSRF(self, ctxData->rowProducer, ctxData->rowCollector,
-		(jlong)context->call_cntr);
-
-	if(hasRow)
+	if(JNI_TRUE == pljava_Function_vpcInvoke(
+		ctxData->rowProducer, ctxData->rowCollector, (jlong)context->call_cntr,
+		JNI_FALSE, &row))
 	{
-		Datum result = Type_nextSRF(self, ctxData->rowProducer, ctxData->rowCollector);
+		Datum result = Type_datumFromSRF(self, row, ctxData->rowCollector);
+		JNI_deleteLocalRef(row);
 		stashCallContext(ctxData);
 		currentInvocation->hasConnected = false;
 		currentInvocation->invocation   = 0;
@@ -572,7 +588,23 @@ bool Type_isPrimitive(Type self)
 
 Type Type_fromJavaType(Oid typeId, const char* javaTypeName)
 {
-	CacheEntry ce = (CacheEntry)HashMap_getByString(s_obtainerByJavaName, javaTypeName);
+	/*
+	 * Do an initial lookup with InvalidOid as the oid part of the key. Multiple
+	 * entries for the same Java name and distinct oids are not anticipated
+	 * except for arrays.
+	 */
+	CacheEntry ce = (CacheEntry)HashMap_getByStringOid(
+		s_obtainerByJavaName, javaTypeName, InvalidOid);
+
+	/*
+	 * If no entry was found using InvalidOid and a valid typeId is provided
+	 * and the wanted Java type is an array, repeat the lookup using the typeId.
+	 */
+	if ( NULL == ce  &&  InvalidOid != typeId
+			&&  NULL != strchr(javaTypeName, ']') )
+		ce = (CacheEntry)HashMap_getByStringOid(
+			s_obtainerByJavaName, javaTypeName, typeId);
+
 	if(ce == 0)
 	{
 		size_t jtlen = strlen(javaTypeName) - 2;
@@ -646,17 +678,33 @@ Type Type_fromOid(Oid typeId, jobject typeMap)
 	if(typeMap != 0)
 	{
 		jobject joid      = Oid_create(typeId);
-		jclass  typeClass = (jclass)JNI_callObjectMethod(typeMap, s_Map_get, joid);
+		jclass  typeClass =
+			(jclass)JNI_callObjectMethod(typeMap, s_Map_get, joid);
 
 		JNI_deleteLocalRef(joid);
 		if(typeClass != 0)
 		{
-			TupleDesc tupleDesc = lookup_rowtype_tupdesc_noerror(typeId, -1, true);
+			/*
+			 * We have found a MappedUDT. It doesn't have SQL-declared I/O
+			 * functions, so we need to look up only the read and write handles,
+			 * and there will be no PLPrincipal to associate them with,
+			 * indicated by passing NULL as the language name.
+			 */
+			jobject readMH =
+				pljava_Function_udtReadHandle(typeClass, NULL, true);
+			jobject writeMH =
+				pljava_Function_udtWriteHandle(typeClass, NULL, true);
+			TupleDesc tupleDesc =
+				lookup_rowtype_tupdesc_noerror(typeId, -1, true);
 			bool hasTupleDesc = NULL != tupleDesc;
 			if ( hasTupleDesc )
 				ReleaseTupleDesc(tupleDesc);
 			type = (Type)UDT_registerUDT(
-				typeClass, typeId, typeStruct, hasTupleDesc, false, NULL, NULL);
+				typeClass, typeId, typeStruct, hasTupleDesc, false,
+				NULL, readMH, writeMH, NULL);
+			/*
+			 * UDT_registerUDT calls JNI_deleteLocalRef on readMH and writeMH.
+			 */
 			JNI_deleteLocalRef(typeClass);
 			goto finally;
 		}
@@ -664,7 +712,8 @@ Type Type_fromOid(Oid typeId, jobject typeMap)
 
 	/* Composite and record types will not have a TypeObtainer registered
 	 */
-	if(typeStruct->typtype == 'c' || (typeStruct->typtype == 'p' && typeId == RECORDOID))
+	if(typeStruct->typtype == 'c'
+		|| (typeStruct->typtype == 'p' && typeId == RECORDOID))
 	{
 		type = Composite_obtain(typeId);
 		goto finally;
@@ -673,11 +722,15 @@ Type Type_fromOid(Oid typeId, jobject typeMap)
 	ce = (CacheEntry)HashMap_getByOid(s_obtainerByOid, typeId);
 	if(ce == 0)
 	{
-		type = Function_checkTypeUDT(typeId, typeStruct);
+		/*
+		 * Perhaps we have found a BaseUDT. If so, this check will register and
+		 * return it.
+		 */
+		type = Function_checkTypeBaseUDT(typeId, typeStruct);
 		if ( 0 != type )
 			goto finally;
 		/*
-		 * Default to String and standard textin/textout coersion.
+		 * Default to String and standard textin/textout coercion.
 		 * Note: if the AS spec includes a Java signature, and the corresponding
 		 * Java type is not String, that will trigger a call to
 		 * Type_fromJavaType to see if a mapping is registered that way. If not,
@@ -736,37 +789,14 @@ static Type _Type_createArrayType(Type self, Oid arrayTypeId)
 	return Array_fromOid(arrayTypeId, self);
 }
 
-static jobject _Type_getSRFProducer(Type self, Function fn)
-{
-	return pljava_Function_refInvoke(fn);
-}
-
 static jobject _Type_getSRFCollector(Type self, PG_FUNCTION_ARGS)
 {
 	return 0;
 }
 
-static bool _Type_hasNextSRF(Type self, jobject rowProducer, jobject rowCollector, jlong callCounter)
+static Datum _Type_datumFromSRF(Type self, jobject row, jobject rowCollector)
 {
-	return (JNI_callBooleanMethod(rowProducer, s_Iterator_hasNext) == JNI_TRUE);
-}
-
-static Datum _Type_nextSRF(Type self, jobject rowProducer, jobject rowCollector)
-{
-	/* XXX make an entry point */
-	jobject tmp = JNI_callObjectMethod(rowProducer, s_Iterator_next);
-	Datum result = Type_coerceObject(self, tmp);
-	JNI_deleteLocalRef(tmp);
-	return result;
-}
-
-static void _Type_closeSRF(Type self, jobject rowProducer)
-{
-}
-
-jobject Type_getSRFProducer(Type self, Function fn)
-{
-	return self->typeClass->getSRFProducer(self, fn);
+	return Type_coerceObject(self, row);
 }
 
 jobject Type_getSRFCollector(Type self, PG_FUNCTION_ARGS)
@@ -774,19 +804,9 @@ jobject Type_getSRFCollector(Type self, PG_FUNCTION_ARGS)
 	return self->typeClass->getSRFCollector(self, fcinfo);
 }
 
-bool Type_hasNextSRF(Type self, jobject rowProducer, jobject rowCollector, jlong callCounter)
+Datum Type_datumFromSRF(Type self, jobject row, jobject rowCollector)
 {
-	return self->typeClass->hasNextSRF(self, rowProducer, rowCollector, callCounter);
-}
-
-Datum Type_nextSRF(Type self, jobject rowProducer, jobject rowCollector)
-{
-	return self->typeClass->nextSRF(self, rowProducer, rowCollector);
-}
-
-void Type_closeSRF(Type self, jobject rowProducer)
-{
-	self->typeClass->closeSRF(self, rowProducer);
+	return self->typeClass->datumFromSRF(self, row, rowCollector);
 }
 
 static Type _Type_getRealType(Type self, Oid realId, jobject typeMap)
@@ -831,6 +851,28 @@ static void initializeTypeBridges()
 	addTypeBridge(cls, ofClass, "java.time.LocalTime", TIMEOID);
 	addTypeBridge(cls, ofClass, "java.time.OffsetDateTime", TIMESTAMPTZOID);
 	addTypeBridge(cls, ofClass, "java.time.OffsetTime", TIMETZOID);
+
+	/*
+	 * TypeBridges that allow Java primitive array types to be passed to things
+	 * expecting their boxed counterparts. An oddball case is byte[], given the
+	 * default oid BYTEAOID here instead of CHARARRAYOID following the pattern,
+	 * because there is a whole 'nother (see byte_array.c) Type that also maps
+	 * byte[] on the Java side, but bytea for PostgreSQL (I am not at all sure
+	 * what I think of that), and bridging it to a different Oid here would
+	 * break it as a parameter to prepared statements that were working. So
+	 * cater to that use, while possibly complicating the new use that was not
+	 * formerly possible.
+	 *
+	 * There is no bridge for char[], because PL/Java has no Type that maps it
+	 * to anything in PostgreSQL.
+	 */
+	addTypeBridge(cls, ofClass, "boolean[]", BOOLARRAYOID);
+	addTypeBridge(cls, ofClass,    "byte[]", BYTEAOID);
+	addTypeBridge(cls, ofClass,   "short[]", INT2ARRAYOID);
+	addTypeBridge(cls, ofClass,     "int[]", INT4ARRAYOID);
+	addTypeBridge(cls, ofClass,    "long[]", INT8ARRAYOID);
+	addTypeBridge(cls, ofClass,   "float[]", FLOAT4ARRAYOID);
+	addTypeBridge(cls, ofClass,  "double[]", FLOAT8ARRAYOID);
 
 	addTypeBridge(cls, ofInterface, "java.sql.SQLXML",
 #if defined(XMLOID)
@@ -926,6 +968,16 @@ void Type_initialize(void)
 	s_Iterator_hasNext = PgObject_getJavaMethod(s_Iterator_class, "hasNext", "()Z");
 	s_Iterator_next = PgObject_getJavaMethod(s_Iterator_class, "next", "()Ljava/lang/Object;");
 
+#if PG_VERSION_NUM < 110000
+	BOOLARRAYOID   = get_array_type(BOOLOID);
+	CHARARRAYOID   = get_array_type(CHAROID);
+	FLOAT8ARRAYOID = get_array_type(FLOAT8OID);
+	INT8ARRAYOID   = get_array_type(INT8OID);
+#if PG_VERSION_NUM < 80400
+	INT2ARRAYOID   = get_array_type(INT2OID);
+#endif
+#endif
+
 	initializeTypeBridges();
 }
 
@@ -949,11 +1001,8 @@ TypeClass TypeClass_alloc2(const char* typeName, Size classSize, Size instanceSi
 	self->coerceObject    = (ObjectCoercer)_PgObject_pureVirtualCalled;
 	self->createArrayType = _Type_createArrayType;
 	self->invoke          = _Type_invoke;
-	self->getSRFProducer  = _Type_getSRFProducer;
 	self->getSRFCollector = _Type_getSRFCollector;
-	self->hasNextSRF      = _Type_hasNextSRF;
-	self->nextSRF         = _Type_nextSRF;
-	self->closeSRF        = _Type_closeSRF;
+	self->datumFromSRF    = _Type_datumFromSRF;
 	self->getTupleDesc    = _Type_getTupleDesc;
 	self->getJNISignature = _Type_getJNISignature;
 	self->dynamic         = false;
@@ -1015,7 +1064,19 @@ static void _registerType(Oid typeId, const char* javaTypeName, Type type, TypeO
 	ce->obtainer = obtainer;
 
 	if(javaTypeName != 0)
-		HashMap_putByString(s_obtainerByJavaName, javaTypeName, ce);
+	{
+		/*
+		 * The s_obtainerByJavaName cache is now keyed by Java name and an oid,
+		 * rather than Java name alone, to address an issue affecting arrays.
+		 * To avoid changing other behavior, the oid used in the hash key will
+		 * be InvalidOid always, unless the Java name being registered is
+		 * an array type and the caller has passed a valid oid.
+		 */
+		Oid keyOid = (NULL == strchr(javaTypeName, ']'))
+			? InvalidOid
+			: typeId;
+		HashMap_putByStringOid(s_obtainerByJavaName, javaTypeName, keyOid, ce);
+	}
 
 	if(typeId != InvalidOid && HashMap_getByOid(s_obtainerByOid, typeId) == 0)
 		HashMap_putByOid(s_obtainerByOid, typeId, ce);
