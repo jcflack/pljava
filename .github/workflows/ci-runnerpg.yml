@@ -58,7 +58,9 @@ jobs:
 
     - name: Obtain PG development files (Ubuntu, PGDG)
       if: ${{ 'Linux' == runner.os }}
-      run: sudo apt-get install postgresql-server-dev-13 libkrb5-dev
+      run: |
+        sudo apt-get update
+        sudo apt-get install postgresql-server-dev-13 libkrb5-dev
 
     - name: Build PL/Java (Linux, macOS)
       if: ${{ 'Windows' != runner.os }}
