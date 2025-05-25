@@ -18,9 +18,11 @@ import java.nio.ByteBuffer;
 import static java.nio.ByteOrder.nativeOrder;
 
 import java.sql.SQLException;
+import java.sql.SQLXML;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 import java.util.function.Function;
 
@@ -28,21 +30,30 @@ import org.postgresql.pljava.internal.SwitchPointCache.Builder;
 import org.postgresql.pljava.internal.SwitchPointCache.SwitchPoint;
 
 import org.postgresql.pljava.model.*;
+import static org.postgresql.pljava.model.MemoryContext.CurrentMemoryContext;
 
 import org.postgresql.pljava.pg.CatalogObjectImpl.*;
+import static
+	org.postgresql.pljava.pg.CatalogObjectImpl.Factory.ForeignTableRelationId;
+
 import static org.postgresql.pljava.pg.ModelConstants.Anum_pg_class_reltype;
-import static org.postgresql.pljava.pg.ModelConstants.RELOID; // syscache
+import static org.postgresql.pljava.pg.ModelConstants.RELOID;        // syscache
+import static org.postgresql.pljava.pg.ModelConstants.FOREIGNTABLEREL; // "
 import static org.postgresql.pljava.pg.ModelConstants.CLASS_TUPLE_SIZE;
 
-import static org.postgresql.pljava.pg.adt.ArrayAdapter
-	.FLAT_STRING_LIST_INSTANCE;
+import static org.postgresql.pljava.pg.TupleTableSlotImpl.heapTupleGetLightSlot;
+
 import org.postgresql.pljava.pg.adt.GrantAdapter;
 import org.postgresql.pljava.pg.adt.NameAdapter;
+import static org.postgresql.pljava.pg.adt.OidAdapter.AM_INSTANCE;
 import static org.postgresql.pljava.pg.adt.OidAdapter.REGCLASS_INSTANCE;
 import static org.postgresql.pljava.pg.adt.OidAdapter.REGNAMESPACE_INSTANCE;
 import static org.postgresql.pljava.pg.adt.OidAdapter.REGROLE_INSTANCE;
 import static org.postgresql.pljava.pg.adt.OidAdapter.REGTYPE_INSTANCE;
+import static org.postgresql.pljava.pg.adt.OidAdapter.SERVER_INSTANCE;
+import static org.postgresql.pljava.pg.adt.OidAdapter.TABLESPACE_INSTANCE;
 import static org.postgresql.pljava.pg.adt.Primitives.*;
+import static org.postgresql.pljava.pg.adt.XMLAdapter.SYNTHETIC_INSTANCE;
 
 import org.postgresql.pljava.sqlgen.Lexicals.Identifier.Qualified;
 import org.postgresql.pljava.sqlgen.Lexicals.Identifier.Simple;
@@ -220,9 +231,13 @@ implements
 	static final int SLOT_TUPLEDESCRIPTOR;
 	static final int SLOT_TYPE;
 	static final int SLOT_OFTYPE;
+	static final int SLOT_AM;
+	static final int SLOT_TABLESPACE;
 	static final int SLOT_TOASTRELATION;
 	static final int SLOT_HASINDEX;
 	static final int SLOT_ISSHARED;
+	static final int SLOT_PERSISTENCE;
+	static final int SLOT_KIND;
 	static final int SLOT_NATTRIBUTES;
 	static final int SLOT_CHECKS;
 	static final int SLOT_HASRULES;
@@ -231,8 +246,10 @@ implements
 	static final int SLOT_ROWSECURITY;
 	static final int SLOT_FORCEROWSECURITY;
 	static final int SLOT_ISPOPULATED;
+	static final int SLOT_REPLIDENT;
 	static final int SLOT_ISPARTITION;
 	static final int SLOT_OPTIONS;
+	static final int SLOT_FOREIGN;
 	static final int NSLOTS;
 
 	static
@@ -265,9 +282,13 @@ implements
 			.withDependent( "tupleDescriptor", SLOT_TUPLEDESCRIPTOR  = i++)
 			.withDependent(            "type", SLOT_TYPE             = i++)
 			.withDependent(          "ofType", SLOT_OFTYPE           = i++)
+			.withDependent(    "accessMethod", SLOT_AM               = i++)
+			.withDependent(      "tablespace", SLOT_TABLESPACE       = i++)
 			.withDependent(   "toastRelation", SLOT_TOASTRELATION    = i++)
 			.withDependent(        "hasIndex", SLOT_HASINDEX         = i++)
 			.withDependent(        "isShared", SLOT_ISSHARED         = i++)
+			.withDependent(     "persistence", SLOT_PERSISTENCE      = i++)
+			.withDependent(            "kind", SLOT_KIND             = i++)
 			.withDependent(     "nAttributes", SLOT_NATTRIBUTES      = i++)
 			.withDependent(          "checks", SLOT_CHECKS           = i++)
 			.withDependent(        "hasRules", SLOT_HASRULES         = i++)
@@ -276,8 +297,10 @@ implements
 			.withDependent(     "rowSecurity", SLOT_ROWSECURITY      = i++)
 			.withDependent("forceRowSecurity", SLOT_FORCEROWSECURITY = i++)
 			.withDependent(     "isPopulated", SLOT_ISPOPULATED      = i++)
+			.withDependent( "replicaIdentity", SLOT_REPLIDENT        = i++)
 			.withDependent(     "isPartition", SLOT_ISPARTITION      = i++)
 			.withDependent(         "options", SLOT_OPTIONS          = i++)
+			.withDependent(         "foreign", SLOT_FOREIGN          = i++)
 
 			.build();
 		NSLOTS = i;
@@ -290,9 +313,13 @@ implements
 		static final Attribute RELOWNER;
 		static final Attribute RELACL;
 		static final Attribute RELOFTYPE;
+		static final Attribute RELAM;
+		static final Attribute RELTABLESPACE;
 		static final Attribute RELTOASTRELID;
 		static final Attribute RELHASINDEX;
 		static final Attribute RELISSHARED;
+		static final Attribute RELPERSISTENCE;
+		static final Attribute RELKIND;
 		static final Attribute RELNATTS;
 		static final Attribute RELCHECKS;
 		static final Attribute RELHASRULES;
@@ -301,8 +328,10 @@ implements
 		static final Attribute RELROWSECURITY;
 		static final Attribute RELFORCEROWSECURITY;
 		static final Attribute RELISPOPULATED;
+		static final Attribute RELREPLIDENT;
 		static final Attribute RELISPARTITION;
 		static final Attribute RELOPTIONS;
+		static final Attribute RELPARTBOUND;
 
 		static
 		{
@@ -312,9 +341,13 @@ implements
 				"relowner",
 				"relacl",
 				"reloftype",
+				"relam",
+				"reltablespace",
 				"reltoastrelid",
 				"relhasindex",
 				"relisshared",
+				"relpersistence",
+				"relkind",
 				"relnatts",
 				"relchecks",
 				"relhasrules",
@@ -323,8 +356,10 @@ implements
 				"relrowsecurity",
 				"relforcerowsecurity",
 				"relispopulated",
+				"relreplident",
 				"relispartition",
-				"reloptions"
+				"reloptions",
+				"relpartbound"
 			).iterator();
 
 			RELNAME             = itr.next();
@@ -332,9 +367,13 @@ implements
 			RELOWNER            = itr.next();
 			RELACL              = itr.next();
 			RELOFTYPE           = itr.next();
+			RELAM               = itr.next();
+			RELTABLESPACE       = itr.next();
 			RELTOASTRELID       = itr.next();
 			RELHASINDEX         = itr.next();
 			RELISSHARED         = itr.next();
+			RELPERSISTENCE      = itr.next();
+			RELKIND             = itr.next();
 			RELNATTS            = itr.next();
 			RELCHECKS           = itr.next();
 			RELHASRULES         = itr.next();
@@ -343,10 +382,53 @@ implements
 			RELROWSECURITY      = itr.next();
 			RELFORCEROWSECURITY = itr.next();
 			RELISPOPULATED      = itr.next();
+			RELREPLIDENT        = itr.next();
 			RELISPARTITION      = itr.next();
 			RELOPTIONS          = itr.next();
+			RELPARTBOUND        = itr.next();
 
 			assert ! itr.hasNext() : "attribute initialization miscount";
+		}
+	}
+
+	/**
+	 * A tiny class to just encapsulate the couple of extra attributes a foreign
+	 * table has, as an alternative to a full-blown ForeignTable catalog object.
+	 *<p>
+	 * This class eagerly populates both {@code server} and {@code options} when
+	 * constructed, so the {@code RegClass} needs just one slot holding this.
+	 */
+	static class Foreign
+	{
+		private static final RegClass FT;
+		private static final Attribute FTSERVER;
+		private static final Attribute FTOPTIONS;
+
+		static
+		{
+			FT = of(CLASSID, ForeignTableRelationId);
+			Iterator<Attribute> itr = FT.tupleDescriptor().project(
+				"ftserver",
+				"ftoptions"
+			).iterator();
+
+			FTSERVER  = itr.next();
+			FTOPTIONS = itr.next();
+
+			assert ! itr.hasNext() : "attribute initialization miscount";
+		}
+
+		final ForeignServer server;
+		final Map<Simple,String> options;
+
+		Foreign(int oid)
+		{
+			ByteBuffer heapTuple = _searchSysCacheCopy1(FOREIGNTABLEREL, oid);
+			TupleTableSlot tts = heapTupleGetLightSlot(
+				FT.tupleDescriptor(), heapTuple, CurrentMemoryContext());
+
+			server  = tts.get(FTSERVER, SERVER_INSTANCE);
+			options = tts.get(FTOPTIONS, ArrayAdapters.RELOPTIONS_INSTANCE);
 		}
 	}
 
@@ -357,13 +439,15 @@ implements
 	 * array, which is also stored in {@code m_tupDescHolder}.
 	 *<p>
 	 * The tuple descriptor for a relation can be retrieved from the PostgreSQL
-	 * {@code relcache} or {@code typcache}; it's the same descriptor, and the
+	 * {@code relcache}, or from the {@code typcache} if the relation has an
+	 * associated type; it's the same descriptor, and the
 	 * latter gets it from the former. Going through the {@code relcache} is
 	 * fussier, involving the lock manager every time, while using the
 	 * {@code typcache} can avoid that except in its cache-miss case.
 	 *<p>
 	 * Here, for every relation other than {@code pg_class} itself, we will
-	 * rely on the corresponding {@code RegType} to do the work. There is a bit
+	 * rely on the corresponding {@code RegType}, if there is one, to do
+	 * the work. There is a bit
 	 * of incest involved; it will construct the descriptor to rely on our
 	 * {@code SwitchPoint} for invalidation, and will poke the wrapper array
 	 * into our {@code m_tupDescHolder}.
@@ -374,11 +458,12 @@ implements
 	 * lives here; it is relation-cache invalidation that obsoletes a cataloged
 	 * tuple descriptor.
 	 *<p>
-	 * However, when the relation <em>is</em> {@code pg_class} itself, we rely
+	 * However, when the relation <em>is</em> {@code pg_class} itself, or is one
+	 * of the relation kinds without an associated type entry, we rely
 	 * on a bespoke JNI method to get the descriptor from the {@code relcache}.
-	 * The case occurs when we are looking up the descriptor to interpret our
-	 * own cache tuples, and the normal case's {@code type()} call won't work
-	 * before that's available.
+	 * The {@code pg_class} case occurs when we are looking up the descriptor to
+	 * interpret our own cache tuples, and the normal case's {@code type()} call
+	 * won't work before that's available.
 	 */
 	private static TupleDescriptor.Interned[] tupleDescriptor(RegClassImpl o)
 	{
@@ -396,23 +481,29 @@ implements
 
 		/*
 		 * In any case other than looking up our own tuple descriptor, we can
-		 * use type() to find the associated RegType and let it do the work.
+		 * use type() to find the associated RegType and let it, if valid,
+		 * do the work.
 		 */
 		if ( CLASSID != o )
 		{
-			o.type().tupleDescriptor(); // side effect: writes o.m_tupDescHolder
-			return o.m_tupDescHolder;
+			RegType t = o.type();
+			if ( t.isValid() )
+			{
+				t.tupleDescriptor(); // side effect: writes o.m_tupDescHolder
+				return o.m_tupDescHolder;
+			}
 		}
 
 		/*
-		 * It is the bootstrap case, looking up the pg_class tuple descriptor.
+		 * May be the bootstrap case, looking up the pg_class tuple descriptor,
+		 * or just a relation kind that does not have an associate type entry.
 		 * If we got here we need it, so we can call the Cataloged constructor
 		 * directly, rather than fromByteBuffer (which would first check whether
 		 * we need it, and bump its reference count only if so). Called
 		 * directly, the constructor expects the count already bumped, which
 		 * the _tupDescBootstrap method will have done for us.
 		 */
-		ByteBuffer bb = _tupDescBootstrap();
+		ByteBuffer bb = _tupDescBootstrap(o.oid());
 		bb.order(nativeOrder());
 		r = new TupleDescriptor.Interned[] {new TupleDescImpl.Cataloged(bb, o)};
 		return o.m_tupDescHolder = r;
@@ -458,6 +549,18 @@ implements
 		return s.get(Att.RELOFTYPE, REGTYPE_INSTANCE);
 	}
 
+	private static AccessMethod accessMethod(RegClassImpl o) throws SQLException
+	{
+		TupleTableSlot s = o.cacheTuple();
+		return s.get(Att.RELAM, AM_INSTANCE);
+	}
+
+	private static Tablespace tablespace(RegClassImpl o) throws SQLException
+	{
+		TupleTableSlot s = o.cacheTuple();
+		return s.get(Att.RELTABLESPACE, TABLESPACE_INSTANCE);
+	}
+
 	private static RegClass toastRelation(RegClassImpl o) throws SQLException
 	{
 		TupleTableSlot s = o.cacheTuple();
@@ -474,6 +577,20 @@ implements
 	{
 		TupleTableSlot s = o.cacheTuple();
 		return s.get(Att.RELISSHARED, BOOLEAN_INSTANCE);
+	}
+
+	private static Persistence persistence(RegClassImpl o) throws SQLException
+	{
+		TupleTableSlot s = o.cacheTuple();
+		return persistenceFromCatalog(
+			s.get(Att.RELPERSISTENCE, INT1_INSTANCE));
+	}
+
+	private static Kind kind(RegClassImpl o) throws SQLException
+	{
+		TupleTableSlot s = o.cacheTuple();
+		return kindFromCatalog(
+			s.get(Att.RELKIND, INT1_INSTANCE));
 	}
 
 	private static short nAttributes(RegClassImpl o) throws SQLException
@@ -525,17 +642,33 @@ implements
 		return s.get(Att.RELISPOPULATED, BOOLEAN_INSTANCE);
 	}
 
+	private static ReplicaIdentity replicaIdentity(RegClassImpl o)
+	throws SQLException
+	{
+		TupleTableSlot s = o.cacheTuple();
+		return replicaIdentityFromCatalog(
+			s.get(Att.RELREPLIDENT, INT1_INSTANCE));
+	}
+
 	private static boolean isPartition(RegClassImpl o) throws SQLException
 	{
 		TupleTableSlot s = o.cacheTuple();
 		return s.get(Att.RELISPARTITION, BOOLEAN_INSTANCE);
 	}
 
-	private static List<String> options(RegClassImpl o) throws SQLException
+	private static Map<Simple,String> options(RegClassImpl o)
+	throws SQLException
 	{
 		TupleTableSlot s = o.cacheTuple();
-		return
-			s.get(Att.RELOPTIONS, FLAT_STRING_LIST_INSTANCE);
+		return s.get(Att.RELOPTIONS, ArrayAdapters.RELOPTIONS_INSTANCE);
+	}
+
+	private static Foreign foreign(RegClassImpl o)
+	throws SQLException
+	{
+		if ( Kind.FOREIGN_TABLE != o.kind() )
+			return null;
+		return new Foreign(o.oid());
 	}
 
 	/* API methods */
@@ -582,9 +715,35 @@ implements
 		}
 	}
 
-	// am
+	@Override
+	public AccessMethod accessMethod()
+	{
+		try
+		{
+			MethodHandle h = m_slots[SLOT_AM];
+			return (AccessMethod)h.invokeExact(this, h);
+		}
+		catch ( Throwable t )
+		{
+			throw unchecked(t);
+		}
+	}
+
 	// filenode
-	// tablespace
+
+	@Override
+	public Tablespace tablespace()
+	{
+		try
+		{
+			MethodHandle h = m_slots[SLOT_TABLESPACE];
+			return (Tablespace)h.invokeExact(this, h);
+		}
+		catch ( Throwable t )
+		{
+			throw unchecked(t);
+		}
+	}
 
 	/* Of limited interest ... estimates used by planner
 	 *
@@ -635,8 +794,33 @@ implements
 		}
 	}
 
-	// persistence
-	// kind
+	@Override
+	public Persistence persistence()
+	{
+		try
+		{
+			MethodHandle h = m_slots[SLOT_PERSISTENCE];
+			return (Persistence)h.invokeExact(this, h);
+		}
+		catch ( Throwable t )
+		{
+			throw unchecked(t);
+		}
+	}
+
+	@Override
+	public Kind kind()
+	{
+		try
+		{
+			MethodHandle h = m_slots[SLOT_KIND];
+			return (Kind)h.invokeExact(this, h);
+		}
+		catch ( Throwable t )
+		{
+			throw unchecked(t);
+		}
+	}
 
 	@Override
 	public short nAttributes()
@@ -750,7 +934,19 @@ implements
 		}
 	}
 
-	// replident
+	@Override
+	public ReplicaIdentity replicaIdentity()
+	{
+		try
+		{
+			MethodHandle h = m_slots[SLOT_REPLIDENT];
+			return (ReplicaIdentity)h.invokeExact(this, h);
+		}
+		catch ( Throwable t )
+		{
+			throw unchecked(t);
+		}
+	}
 
 	@Override
 	public boolean isPartition()
@@ -771,12 +967,12 @@ implements
 	// minmxid
 
 	@Override
-	public List<String> options()
+	public Map<Simple,String> options()
 	{
 		try
 		{
 			MethodHandle h = m_slots[SLOT_OPTIONS];
-			return (List<String>)h.invokeExact(this, h);
+			return (Map<Simple,String>)h.invokeExact(this, h);
 		}
 		catch ( Throwable t )
 		{
@@ -784,5 +980,93 @@ implements
 		}
 	}
 
-	// partbound
+	@Override
+	public SQLXML partitionBound()
+	{
+		/*
+		 * Because of the JDBC rules that an SQLXML instance lasts no longer
+		 * than one transaction and can only be read once, it is not a good
+		 * candidate for caching. We will just fetch a new one from the cached
+		 * tuple as needed.
+		 */
+		TupleTableSlot s = cacheTuple();
+		return s.get(Att.RELPARTBOUND, SYNTHETIC_INSTANCE);
+	}
+
+	@Override
+	public ForeignServer foreignServer()
+	{
+		try
+		{
+			MethodHandle h = m_slots[SLOT_FOREIGN];
+			Foreign f = (Foreign)h.invokeExact(this, h);
+			return null == f ? null : f.server;
+		}
+		catch ( Throwable t )
+		{
+			throw unchecked(t);
+		}
+	}
+
+	@Override
+	public Map<Simple,String> foreignOptions()
+	{
+		try
+		{
+			MethodHandle h = m_slots[SLOT_FOREIGN];
+			Foreign f = (Foreign)h.invokeExact(this, h);
+			return null == f ? null : f.options;
+		}
+		catch ( Throwable t )
+		{
+			throw unchecked(t);
+		}
+	}
+
+	private static Persistence persistenceFromCatalog(byte b)
+	{
+		switch ( b )
+		{
+		case (byte)'p': return Persistence.PERMANENT;
+		case (byte)'u': return Persistence.UNLOGGED;
+		case (byte)'t': return Persistence.TEMPORARY;
+		}
+		throw unchecked(new SQLException(
+			"unrecognized Persistence type '" + (char)b + "' in catalog",
+			"XX000"));
+	}
+
+	private static Kind kindFromCatalog(byte b)
+	{
+		switch ( b )
+		{
+		case (byte)'r': return Kind.TABLE;
+		case (byte)'i': return Kind.INDEX;
+		case (byte)'S': return Kind.SEQUENCE;
+		case (byte)'t': return Kind.TOAST;
+		case (byte)'v': return Kind.VIEW;
+		case (byte)'m': return Kind.MATERIALIZED_VIEW;
+		case (byte)'c': return Kind.COMPOSITE_TYPE;
+		case (byte)'f': return Kind.FOREIGN_TABLE;
+		case (byte)'p': return Kind.PARTITIONED_TABLE;
+		case (byte)'I': return Kind.PARTITIONED_INDEX;
+		}
+		throw unchecked(new SQLException(
+			"unrecognized Kind type '" + (char)b + "' in catalog",
+			"XX000"));
+	}
+
+	private static ReplicaIdentity replicaIdentityFromCatalog(byte b)
+	{
+		switch ( b )
+		{
+		case (byte)'d': return ReplicaIdentity.DEFAULT;
+		case (byte)'n': return ReplicaIdentity.NOTHING;
+		case (byte)'f': return ReplicaIdentity.ALL;
+		case (byte)'i': return ReplicaIdentity.INDEX;
+		}
+		throw unchecked(new SQLException(
+			"unrecognized ReplicaIdentity type '" + (char)b + "' in catalog",
+			"XX000"));
+	}
 }

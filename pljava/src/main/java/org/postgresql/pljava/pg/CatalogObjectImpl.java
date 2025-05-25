@@ -68,6 +68,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Optional;
@@ -516,6 +517,9 @@ public class CatalogObjectImpl implements CatalogObject
 			{
 				switch ( classId )
 				{
+				case TableSpaceRelationId:
+					fieldRead = Tablespace.CLASSID;
+					return TablespaceImpl::new;
 				case TypeRelationId:
 					fieldRead = RegType.CLASSID;
 					return typeConstructorFor(objId);
@@ -528,6 +532,15 @@ public class CatalogObjectImpl implements CatalogObject
 				case DatabaseRelationId:
 					fieldRead = Database.CLASSID;
 					return DatabaseImpl::new;
+				case ForeignServerRelationId:
+					fieldRead = ForeignServer.CLASSID;
+					return ForeignServerImpl::new;
+				case ForeignDataWrapperRelationId:
+					fieldRead = ForeignDataWrapper.CLASSID;
+					return ForeignDataWrapperImpl::new;
+				case AccessMethodRelationId:
+					fieldRead = AccessMethod.CLASSID;
+					return AccessMethodImpl::new;
 				case ConstraintRelationId:
 					fieldRead = Constraint.CLASSID;
 					return ConstraintImpl::new;
@@ -713,6 +726,12 @@ public class CatalogObjectImpl implements CatalogObject
 		@Native public static final int ANYCOMPATIBLEARRAYOID         = 5078;
 		@Native public static final int ANYCOMPATIBLENONARRAYOID      = 5079;
 		@Native public static final int ANYCOMPATIBLERANGEOID         = 5080;
+
+		/*
+		 * A relation ID that won't be used to construct a full-blown catalog
+		 * object, but used in RegClassImpl.
+		 */
+		@Native public static final int ForeignTableRelationId = 3118;
 
 		/*
 		 * Indices into arrays used for syscache invalidation callbacks.
@@ -995,24 +1014,26 @@ public class CatalogObjectImpl implements CatalogObject
 
 		/**
 		 * Return a byte buffer mapping the tuple descriptor
-		 * for {@code pg_class} itself, using only the PostgreSQL
+		 * for <var>relid</var>, using only the PostgreSQL
 		 * {@code relcache}.
 		 *<p>
 		 * Only to be called by {@code RegClassImpl}. Declaring it here allows
 		 * that class to be kept pure Java.
 		 *<p>
 		 * Other descriptor lookups on a {@code RegClass} are done by handing
-		 * off to its associated row {@code RegType}, which will look in
+		 * off to an associated row {@code RegType}, when there is one, which
+		 * will look in
 		 * the {@code typcache}. But finding the associated row {@code RegType}
 		 * isn't something {@code RegClass} can do before it has obtained this
-		 * crucial tuple descriptor for its own structure.
+		 * crucial tuple descriptor for its own structure, and also there are
+		 * relation kinds (index and toast, anyway) which have no type entry.
 		 *<p>
 		 * This method shall increment the reference count; the caller will pass
 		 * the byte buffer directly to a {@code TupleDescImpl} constructor,
 		 * which assumes that has already happened. The reference count shall be
 		 * incremented without registering the descriptor for leak warnings.
 		 */
-		static native ByteBuffer _tupDescBootstrap();
+		static native ByteBuffer _tupDescBootstrap(int relid);
 
 		private Addressed()
 		{
@@ -1488,6 +1509,54 @@ public class CatalogObjectImpl implements CatalogObject
 							}
 						}
 						return List.of(modes);
+					}
+				});
+
+		/**
+		 * {@code Map<Identifier.Simple,String>} from an array of {@code TEXT}
+		 * that represents 'reloptions' (as used on relations, attributes, and
+		 * foreign wrappers / servers / tables, at least).
+		 *<p>
+		 * The {@code String} value is never expected to be null (PostgreSQL's
+		 * {@code transformRelOptions} will have substituted {@code true} where
+		 * an option with no value was parsed), and this adapter will
+		 * <em>assume</em> the first {@code '='} in each element delimits the
+		 * key from the value (that is, that no key can be an SQL delimited
+		 * identifier containing {@code '='}, though PostgreSQL as of 17 does
+		 * not enforce that).
+		 */
+		ArrayAdapter<Map<Identifier.Simple,String>> RELOPTIONS_INSTANCE =
+			new ArrayAdapter<>(TextAdapter.INSTANCE,
+				new Adapter.Contract.Array<>()
+				{
+					@Override
+					public Map<Identifier.Simple,String> construct(
+						int nDims, int[] dimsAndBounds, As<String,?> adapter,
+						TupleTableSlot.Indexed slot)
+						throws SQLException
+					{
+						int n = slot.elements();
+						@SuppressWarnings("unchecked")
+						Map.Entry<Identifier.Simple,String>[] entries =
+							new Map.Entry[n];
+						for ( int i = 0; i < n; ++ i )
+						{
+							String s = slot.get(i, adapter);
+							int pos = s.indexOf('=');
+							try
+							{
+								entries[i] = Map.entry(
+									Identifier.Simple.fromCatalog(
+										s.substring(0, pos)),
+									s.substring(1 + pos));
+							}
+							catch ( StringIndexOutOfBoundsException e )
+							{
+								throw new AssertionError(
+									"transformed reloption with no =", e);
+							}
+						}
+						return Map.ofEntries(entries);
 					}
 				});
 	}

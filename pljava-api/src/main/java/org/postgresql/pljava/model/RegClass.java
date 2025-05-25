@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2022-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -11,7 +11,9 @@
  */
 package org.postgresql.pljava.model;
 
-import java.util.List;
+import java.sql.SQLXML;
+
+import java.util.Map;
 
 import org.postgresql.pljava.model.CatalogObject.*;
 
@@ -52,6 +54,16 @@ extends
 		}
 	}
 
+	enum Persistence { PERMANENT, UNLOGGED, TEMPORARY }
+
+	enum Kind
+	{
+		TABLE, INDEX, SEQUENCE, TOAST, VIEW, MATERIALIZED_VIEW, COMPOSITE_TYPE,
+		FOREIGN_TABLE, PARTITIONED_TABLE, PARTITIONED_INDEX
+	}
+
+	enum ReplicaIdentity { DEFAULT, NOTHING, ALL, INDEX }
+
 	/**
 	 * The PostgreSQL type that is associated with this relation as its
 	 * "row type".
@@ -71,9 +83,16 @@ extends
 	 * associated with this relation.
 	 */
 	RegType ofType();
-	// am
-	// filenode
-	// tablespace
+
+	AccessMethod accessMethod();
+
+	/* Of limited interest ... used in forming pathname of relation on disk,
+	 * but in very fiddly ways and dependent on the access method.
+	 *
+	int filenode();
+	 */
+
+	Tablespace tablespace();
 
 	/* Of limited interest ... estimates used by planner
 	 *
@@ -99,8 +118,8 @@ extends
 	 * shared across all databases in the cluster.
 	 */
 	boolean isShared();
-	// persistence
-	// kind
+	Persistence persistence();
+	Kind kind();
 	short nAttributes();
 	short checks();
 	boolean hasRules();
@@ -109,19 +128,24 @@ extends
 	boolean rowSecurity();
 	boolean forceRowSecurity();
 	boolean isPopulated();
-	// replident
+	ReplicaIdentity replicaIdentity();
 	boolean isPartition();
 	// rewrite
 	// frozenxid
 	// minmxid
+	Map<Simple,String> options();
+	SQLXML partitionBound();
+
 	/**
-	 * This is a list of {@code keyword=value} pairs and ought to have
-	 * a more specific return type.
-	 *<p>
-	 * XXX
+	 * The {@link ForeignServer} if this is a foreign table, otherwise null.
 	 */
-	List<String> options();
-	// partbound
+	ForeignServer foreignServer();
+
+	/**
+	 * Table options understood by the {@link #foreignServer foreign server}
+	 * if this is a foreign table, otherwise null.
+	 */
+	Map<Simple,String> foreignOptions();
 
 	TupleDescriptor.Interned tupleDescriptor();
 }
