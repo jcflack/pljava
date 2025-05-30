@@ -53,6 +53,9 @@ import org.postgresql.pljava.sqlgen.Lexicals.Identifier.Unqualified;
 
 import static org.postgresql.pljava.internal.UncheckedException.unchecked;
 
+/**
+ * Implementation of the {@link Attribute Attribute} interface.
+ */
 abstract class AttributeImpl extends Addressed<RegClass>
 implements
 	Nonshared<RegClass>, Named<Simple>,
@@ -540,15 +543,6 @@ implements
 	}
 
 	@Override
-	public int cachedOffset() // perhaps useful for heap case?
-	{
-		ByteBuffer b = rawBuffer();
-		assert 4 == SIZEOF_pg_attribute_attcacheoff
-			: "sizeof attcacheoff changed";
-		return b.getInt(OFFSET_pg_attribute_attcacheoff);
-	}
-
-	@Override
 	public boolean byValue()
 	{
 		try
@@ -960,12 +954,6 @@ implements
 		public int dimensions()
 		{
 			return m_type.dimensions();
-		}
-
-		@Override
-		public int cachedOffset() // perhaps useful for heap case?
-		{
-			return -1;
 		}
 
 		@Override

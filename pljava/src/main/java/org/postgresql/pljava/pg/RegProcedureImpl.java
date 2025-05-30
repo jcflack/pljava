@@ -70,6 +70,9 @@ import org.postgresql.pljava.sqlgen.Lexicals.Identifier;
 import org.postgresql.pljava.sqlgen.Lexicals.Identifier.Simple;
 import org.postgresql.pljava.sqlgen.Lexicals.Identifier.Unqualified;
 
+/**
+ * Implementation of the {@link RegProcedure RegProcedure} interface.
+ */
 class RegProcedureImpl<M extends Memo.Why<M>> extends Addressed<RegProcedure<?>>
 implements
 	Nonshared<RegProcedure<?>>, Namespaced<Simple>, Owned,
@@ -1107,6 +1110,10 @@ implements
 		return m_why;
 	}
 
+	/**
+	 * Abstract superclass of both {@link Why Why} and {@link How How} memo
+	 * implementations.
+	 */
 	public static abstract class AbstractMemo
 	{
 		protected AbstractMemo()
@@ -1116,6 +1123,9 @@ implements
 
 		abstract void invalidate(List<SwitchPoint> sps, List<Runnable> postOps);
 
+		/**
+		 * Abstract base class for a {@link Why Why} memo implementation.
+		 */
 		public static abstract class Why<M extends Memo.Why<M>>
 		extends AbstractMemo implements Memo.Why<M>
 		{
@@ -1151,6 +1161,9 @@ implements
 			}
 		}
 
+		/**
+		 * Abstract base class for a {@link How How} memo implementation.
+		 */
 		public static abstract class How<M extends Memo.How<M>>
 		extends AbstractMemo implements Memo.How<M>
 		{
@@ -1190,7 +1203,7 @@ implements
 	 * Abstract superclass of a {@code Why} memo used on routines that play
 	 * specific support roles for other catalog objects (such as a
 	 * {@code Handler} or {@code Validator} for a {@code ProceduralLanguage}
-	 * or a {@code FromSQL} or {@code ToSQL> for a {@code Transform>), where
+	 * or a {@code FromSQL} or {@code ToSQL} for a {@code Transform>}, where
 	 * dependent objects should be invalidated if the support routine is.
 	 *<p>
 	 * Because a support routine can be depended on by more than one object
@@ -1258,7 +1271,7 @@ implements
 		 * if present, or getting a new one from <var>supplier</var> and
 		 * applying it.
 		 *<p>
-		 * The <var>supplier will typically be a lambda that passes
+		 * The <var>supplier</var> will typically be a lambda that passes
 		 * <var>proc</var> and <var>dep</var> to the constructor of
 		 * the concrete subclass of this class.
 		 *<p>
