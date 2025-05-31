@@ -40,20 +40,15 @@
 
 	<profiles>
 		<profile>
-			<id>nashorngone</id>
+			<id>nashornmod</id>
 			<activation>
 				<jdk>[15,)</jdk>
 			</activation>
 			<dependencies>
 				<dependency>
-					<groupId>org.graalvm.js</groupId>
-					<artifactId>js</artifactId>
-					<version>20.1.0</version>
-				</dependency>
-				<dependency>
-					<groupId>org.graalvm.js</groupId>
-					<artifactId>js-scriptengine</artifactId>
-					<version>20.1.0</version>
+					<groupId>org.openjdk.nashorn</groupId>
+					<artifactId>nashorn-core</artifactId>
+					<version>15.4</version>
 				</dependency>
 			</dependencies>
 		</profile>
@@ -61,6 +56,14 @@
 
 	<build>
 		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<configuration>
+					<proc>none</proc>
+				</configuration>
+			</plugin>
+
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-plugin-plugin</artifactId>
@@ -175,6 +178,8 @@ function executeReport(report, locale)
 			 */
 			"-locale",      locale.toString(),
 			"-quiet",
+			"--show-members", "package",
+			"--show-types",   "package",
 			/*
 			 * Options that are passed to the doclet.
 			 */

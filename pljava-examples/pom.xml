@@ -53,11 +53,17 @@
 					<includes>
 						<include>org/postgresql/pljava/example/*.java</include>
 						<include>org/postgresql/pljava/example/annotation/*.java</include>
+						<include>org/postgresql/pljava/example/polyglot/*.java</include>
 					</includes>
 					<compilerArgs>
 						<arg>--processor-module-path</arg>
 						<arg>${basedir}/../pljava-api/target/pljava-api-${project.version}.jar</arg>
 					</compilerArgs>
+					<annotationProcessors>
+						<annotationProcessor>
+							org.postgresql.pljava.annotation.processing.DDRProcessor
+						</annotationProcessor>
+					</annotationProcessors>
 				</configuration>
 			</plugin>
 			<plugin>
@@ -187,7 +193,8 @@ function executeReport(report, locale)
 
 		var packages = [
 			"org.postgresql.pljava.example",
-			"org.postgresql.pljava.example.annotation"
+			"org.postgresql.pljava.example.annotation",
+			"org.postgresql.pljava.example.polyglot"
 		];
 
 		if ( isProfileActive('saxon-examples') )
@@ -230,11 +237,13 @@ function executeReport(report, locale)
 		 * A special file manager that will rewrite the RELDOTS seen in
 		 * -linkoffline above. The options a file manager recognizes must be the
 		 * first ones in args; handleFirstOptions below returns at the first one
-		 * the file manager doesn't know what to do with.
+		 * the file manager doesn't know what to do with. Java 19 seems to have
+		 * learned to pass the args to the file manager without the fuss here.
 		 */
 		var rmgr = new org.postgresql.pljava.pgxs.RelativizingFileManager(
 			smgr, Charset.forName(report.outputEncoding));
-		rmgr.handleFirstOptions(args);
+		if ( 0 > v.compareTo(java.lang.Runtime.Version.parse("19-ea")) )
+			rmgr.handleFirstOptions(args);
 
 		var task = tool.getTask(null, rmgr, diagListener, null, args, null);
 		if (task.call())

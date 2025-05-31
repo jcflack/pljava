@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2018-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -36,6 +36,7 @@ import java.io.Writer;
 
 import java.io.IOException;
 
+import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 
@@ -65,10 +66,13 @@ import javax.xml.validation.Schema;
 import javax.xml.validation.SchemaFactory;
 
 import org.postgresql.pljava.Adjusting;
+import static org.postgresql.pljava.Adjusting.XML.setFirstSupported;
 import org.postgresql.pljava.annotation.Function;
 import org.postgresql.pljava.annotation.MappedUDT;
 import org.postgresql.pljava.annotation.SQLAction;
 import org.postgresql.pljava.annotation.SQLType;
+
+import static org.postgresql.pljava.model.CharsetEncoding.SERVER_ENCODING;
 
 import static org.postgresql.pljava.example.LoggerTest.logMessage;
 
@@ -112,16 +116,7 @@ import org.w3c.dom.bootstrap.DOMImplementationRegistry;
 	"END"
 )
 
-@SQLAction(implementor="postgresql_ge_80400",
-	provides="postgresql_xml_ge84",
-	install=
-	"SELECT CASE (SELECT 1 FROM pg_type WHERE typname = 'xml') WHEN 1" +
-	" THEN set_config('pljava.implementors', 'postgresql_xml_ge84,' || " +
-	" current_setting('pljava.implementors'), true) " +
-	"END"
-)
-
-@SQLAction(implementor="postgresql_xml_ge84", requires="echoXMLParameter",
+@SQLAction(implementor="postgresql_xml", requires="echoXMLParameter",
 	install=
 	"WITH" +
 	" s(how) AS (SELECT generate_series(1, 7))," +
@@ -146,7 +141,7 @@ import org.w3c.dom.bootstrap.DOMImplementationRegistry;
 	" r"
 )
 
-@SQLAction(implementor="postgresql_xml_ge84", requires="proxiedXMLEcho",
+@SQLAction(implementor="postgresql_xml", requires="proxiedXMLEcho",
 	install=
 	"WITH" +
 	" s(how) AS (SELECT unnest('{1,2,4,5,6,7}'::int[]))," +
@@ -170,7 +165,7 @@ import org.w3c.dom.bootstrap.DOMImplementationRegistry;
 	" r"
 )
 
-@SQLAction(implementor="postgresql_xml_ge84", requires="lowLevelXMLEcho",
+@SQLAction(implementor="postgresql_xml", requires="lowLevelXMLEcho",
 	install={
 	"SELECT" +
 	" preparexmlschema('schematest', $$" +
@@ -279,6 +274,43 @@ import org.w3c.dom.bootstrap.DOMImplementationRegistry;
 		" WHERE extname = 'pljava'"
 	}
 )
+
+@SQLAction(implementor="postgresql_xml",
+	provides="xml_java_ge_22", requires="javaSpecificationGE", install=
+	"SELECT CASE WHEN" +
+	" javatest.javaSpecificationGE('22')" +
+	" THEN set_config('pljava.implementors', 'xml_java_ge_22,' || " +
+	" current_setting('pljava.implementors'), true) " +
+	"END"
+)
+
+@SQLAction(implementor="xml_java_ge_22", requires="lowLevelXMLEcho", install=
+	"WITH" +
+	" s(how) AS (SELECT unnest('{5,6,7}'::int[]))," +
+	" r(isdoc) AS (" +
+	" SELECT" +
+	"  javatest.lowlevelxmlecho(" +
+	/*
+	 * A truly minimal DTD, <!DOCTYPE a>, cannot be ignored by Java 22's SAX/DOM
+	 * parser (though it can be, when using the StAX API). NullPointerException
+	 * calling getActiveGrammar().isImmutable() is the result. Bug: JDK-8329295
+	 * Including either an externalID or an internal subset (like the empty []
+	 * here) avoids the issue.
+	 */
+	"   '<!DOCTYPE a []><a/>'::xml, how, params) IS DOCUMENT" +
+	" FROM" +
+	"  s," +
+	"  (SELECT null::void AS ignoreDTD) AS params" +
+	" )" +
+	"SELECT" +
+	" CASE WHEN every(isdoc)" +
+	"  THEN javatest.logmessage('INFO',    'jdk.xml.dtd.support=ignore OK')" +
+	"  ELSE javatest.logmessage('WARNING', 'jdk.xml.dtd.support=ignore NG')" +
+	" END " +
+	"FROM" +
+	" r"
+)
+
 @MappedUDT(schema="javatest", name="onexml", structure="c1 xml",
 		   implementor="postgresql_xml",
            comment="A composite type mapped by the PassXML example class")
@@ -518,33 +550,51 @@ public class PassXML implements SQLData
 			builtin
 			? TransformerFactory.newDefaultInstance()
 			: TransformerFactory.newInstance();
-		String exf =
-		  "http://www.oracle.com/xml/jaxp/properties/enableExtensionFunctions";
-		String ecl = "jdk.xml.transform.extensionClassLoader";
+
+		String legacy_pfx = "http://www.oracle.com/xml/jaxp/properties/";
+		String java17_pfx = "jdk.xml.";
+		String exf_sfx = "enableExtensionFunctions";
+
+		String ecl_legacy = "jdk.xml.transform.extensionClassLoader";
+		String ecl_java17 = "jdk.xml.extensionClassLoader";
+
 		Source src = sxToSource(source, how, adjust);
+
 		try
 		{
-			try
+			Exception e;
+
+			e = setFirstSupported(tf::setFeature, enableExtensionFunctions,
+				List.of(TransformerConfigurationException.class), null,
+				java17_pfx + exf_sfx, legacy_pfx + exf_sfx);
+
+			if ( null != e )
 			{
-				tf.setFeature(exf, enableExtensionFunctions);
-			}
-			catch ( TransformerConfigurationException e )
-			{
-				logMessage("WARNING",
-					"non-builtin transformer: ignoring " + e.getMessage());
+				if ( builtin )
+					throw new SQLException(
+						"Configuring XML transformation: " + e.getMessage(), e);
+				else
+					logMessage("WARNING",
+						"non-builtin transformer: ignoring " + e.getMessage());
 			}
 
 			if ( withJava )
 			{
-				try
+				e = setFirstSupported(tf::setAttribute,
+					Thread.currentThread().getContextClassLoader(),
+					List.of(IllegalArgumentException.class), null,
+					ecl_java17, ecl_legacy);
+
+				if ( null != e )
 				{
-					tf.setAttribute(ecl,
-						Thread.currentThread().getContextClassLoader());
-				}
-				catch ( IllegalArgumentException e )
-				{
-					logMessage("WARNING",
-					"non-builtin transformer: ignoring " + e.getMessage());
+					if ( builtin )
+						throw new SQLException(
+							"Configuring XML transformation: " + 
+								e.getMessage(), e);
+					else
+						logMessage("WARNING",
+							"non-builtin transformer: ignoring " + 
+								e.getMessage());
 				}
 			}
 
@@ -594,8 +644,7 @@ public class PassXML implements SQLData
 			 * for setting the Transformer to use the server encoding.
 			 */
 			if ( rlt instanceof StreamResult )
-				t.setOutputProperty(ENCODING,
-					System.getProperty("org.postgresql.server.encoding"));
+				t.setOutputProperty(ENCODING, SERVER_ENCODING.charset().name());
 			else if ( Boolean.TRUE.equals(indent) )
 				logMessage("WARNING",
 					"indent requested, but howout specifies a non-stream " +
@@ -663,8 +712,7 @@ public class PassXML implements SQLData
 			 * for setting the Transformer to use the server encoding.
 			 */
 			if ( howout < 5 )
-				t.setOutputProperty(ENCODING,
-					System.getProperty("org.postgresql.server.encoding"));
+				t.setOutputProperty(ENCODING, SERVER_ENCODING.charset().name());
 			t.transform(src, rlt);
 		}
 		catch ( TransformerException te )
@@ -702,7 +750,7 @@ public class PassXML implements SQLData
 	 * still be exercised by calling this method, explicitly passing
 	 * {@code adjust => NULL}.
 	 */
-	@Function(schema="javatest", implementor="postgresql_xml_ge84",
+	@Function(schema="javatest", implementor="postgresql_xml",
 		provides="lowLevelXMLEcho")
 	public static SQLXML lowLevelXMLEcho(
 		SQLXML sx, int how, @SQLType(defaultValue={}) ResultSet adjust)
@@ -772,8 +820,7 @@ public class PassXML implements SQLData
 	 *<p>
 	 * Column names in the <em>adjust</em> row are case-insensitive versions of
 	 * the method names in {@link Adjusting.XML.Parsing}, and the value of each
-	 * column should be of the appropriate type (at present, boolean for all of
-	 * them).
+	 * column should be of the appropriate type (if the method has a parameter).
 	 * @param adjust A row type as described above, possibly of no columns if no
 	 * adjustments are wanted
 	 * @param axp An instance of Adjusting.XML.Parsing
@@ -789,8 +836,12 @@ public class PassXML implements SQLData
 		for ( int i = 1; i <= n; ++i )
 		{
 			String k = rsmd.getColumnLabel(i);
-			if ( "allowDTD".equalsIgnoreCase(k) )
+			if ( "lax".equalsIgnoreCase(k) )
+				axp.lax(adjust.getBoolean(i));
+			else if ( "allowDTD".equalsIgnoreCase(k) )
 				axp.allowDTD(adjust.getBoolean(i));
+			else if ( "ignoreDTD".equalsIgnoreCase(k) )
+				axp.ignoreDTD();
 			else if ( "externalGeneralEntities".equalsIgnoreCase(k) )
 				axp.externalGeneralEntities(adjust.getBoolean(i));
 			else if ( "externalParameterEntities".equalsIgnoreCase(k) )
@@ -1046,12 +1097,9 @@ public class PassXML implements SQLData
 
 	/**
 	 * Text-typed variant of lowLevelXMLEcho (does not require XML type).
-	 *<p>
-	 * It does declare a parameter default, limiting it to PostgreSQL 8.4 or
-	 * later.
 	 */
 	@Function(schema="javatest", name="lowLevelXMLEcho",
-		type="text", implementor="postgresql_ge_80400")
+		type="text")
 	public static SQLXML lowLevelXMLEcho_(@SQLType("text") SQLXML sx, int how,
 		@SQLType(defaultValue={}) ResultSet adjust)
 	throws SQLException

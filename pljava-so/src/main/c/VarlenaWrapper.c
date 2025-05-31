@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2018-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -21,13 +21,8 @@
 #endif
 
 #include <utils/datum.h>
-
-#if PG_VERSION_NUM < 80400
-#define RegisterSnapshotOnOwner(s,o) NULL
-#else
 #include <utils/snapshot.h>
 #include <utils/snapmgr.h>
-#endif
 
 #include "org_postgresql_pljava_internal_VarlenaWrapper_Input_State.h"
 #include "org_postgresql_pljava_internal_VarlenaWrapper_Output_State.h"
@@ -38,40 +33,14 @@
 #include "pljava/JNICalls.h"
 
 #if PG_VERSION_NUM < 90600
-#define GetOldestSnapshot() NULL
-#endif
-
-#if PG_VERSION_NUM < 90400
-/*
- * There aren't 'indirect' varlenas yet, IS_EXTERNAL_ONDISK is just IS_EXTERNAL,
- * and VARATT_EXTERNAL_GET_POINTER is private inside tuptoaster.c; copy it here.
- */
-#define VARATT_IS_EXTERNAL_ONDISK VARATT_IS_EXTERNAL
-#define VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr) \
-do { \
-	varattrib_1b_e *attre = (varattrib_1b_e *) (attr); \
-	memcpy(&(toast_pointer), VARDATA_EXTERNAL(attre), sizeof(toast_pointer)); \
-} while (0)
-#endif
-
-#if PG_VERSION_NUM < 80300
-#define VARSIZE_ANY(PTR) VARSIZE(PTR)
-#define VARSIZE_ANY_EXHDR(PTR) (VARSIZE(PTR) - VARHDRSZ)
-#define SET_VARSIZE(PTR, len) VARATT_SIZEP(PTR) = len & VARATT_MASK_SIZE
-struct varatt_external
-{
-	int32 va_extsize; /* the only piece used here */
-};
-#undef VARATT_EXTERNAL_GET_POINTER
-#define VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr) \
-do { \
-	(toast_pointer).va_extsize = \
-		((varattrib *)(attr))->va_content.va_external.va_extsize; \
-} while (0)
-#define _VL_TYPE varattrib *
+#define get_toast_snapshot() NULL
+#elif PG_VERSION_NUM < 180000
+#define get_toast_snapshot() GetOldestSnapshot()
 #else
-#define _VL_TYPE struct varlena *
+#include <access/toast_internals.h>
 #endif
+
+#define _VL_TYPE struct varlena *
 
 #if PG_VERSION_NUM < 140000
 #define VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) ((toast_pointer).va_extsize)
@@ -79,8 +48,11 @@ do { \
 
 #define INITIALSIZE 1024
 
+static jclass s_DatumImpl_class;
+
+static jmethodID s_DatumImpl_adopt;
+
 static jclass s_VarlenaWrapper_class;
-static jmethodID s_VarlenaWrapper_adopt;
 
 static jclass s_VarlenaWrapper_Input_class;
 static jclass s_VarlenaWrapper_Output_class;
@@ -101,37 +73,6 @@ static jfieldID  s_VarlenaWrapper_Input_State_varlena;
  * form, it will use these 'methods' to flatten it, and that's when the one
  * final reallocation and copy will happen.
  */
-
-#if PG_VERSION_NUM < 90500
-/*
- * There aren't 'expanded' varlenas yet. Copy some defs (in simplified form)
- * and pretend there are.
- */
-typedef struct ExpandedObjectHeader ExpandedObjectHeader;
-
-typedef Size (*EOM_get_flat_size_method) (ExpandedObjectHeader *eohptr);
-typedef void (*EOM_flatten_into_method) (ExpandedObjectHeader *eohptr,
-										  void *result, Size allocated_size);
-
-typedef struct ExpandedObjectMethods
-{
-	EOM_get_flat_size_method get_flat_size;
-	EOM_flatten_into_method flatten_into;
-} ExpandedObjectMethods;
-
-struct ExpandedObjectHeader
-{
-	int32 magic;
-	MemoryContext eoh_context;
-};
-
-#define EOH_init_header(eohptr, methods, obj_context) \
-	do {(eohptr)->magic = -1; (eohptr)->eoh_context = (obj_context);} while (0)
-
-#define EOHPGetRWDatum(eohptr) (eohptr)
-#define DatumGetEOHP(d) (d)
-#define VARATT_IS_EXTERNAL_EXPANDED(attr) false
-#endif
 
 static Size VOS_get_flat_size(ExpandedObjectHeader *eohptr);
 static void VOS_flatten_into(ExpandedObjectHeader *eohptr,
@@ -179,17 +120,16 @@ jobject pljava_VarlenaWrapper_Input(
 	MemoryContext mc;
 	MemoryContext prevcxt;
 	_VL_TYPE vl;
-	Ptr2Long p2lro;
-	Ptr2Long p2lcxt;
-	Ptr2Long p2lpin;
-	Ptr2Long p2ldatum;
+	jlong jro;
+	jlong jcxt;
+	jlong jpin;
+	jlong jdatum;
 	Size parked;
 	Size actual;
 	Snapshot pin = NULL;
 
 	vl = (_VL_TYPE) DatumGetPointer(d);
 
-#if PG_VERSION_NUM >= 90400
 	if ( VARATT_IS_EXTERNAL_INDIRECT(vl) ) /* at most once; can't be nested */
 	{
 		struct varatt_indirect redirect;
@@ -197,7 +137,6 @@ jobject pljava_VarlenaWrapper_Input(
 		vl = (_VL_TYPE)redirect.pointer;
 		d = PointerGetDatum(vl);
 	}
-#endif
 
 	parked = VARSIZE_ANY(vl);
 	actual = toast_raw_datum_size(d) - VARHDRSZ;
@@ -213,7 +152,7 @@ jobject pljava_VarlenaWrapper_Input(
 		goto justDetoastEagerly;
 	if ( VARATT_IS_EXTERNAL_ONDISK(vl) )
 	{
-		pin = GetOldestSnapshot();
+		pin = get_toast_snapshot();
 		if ( NULL == pin )
 		{
 			/*
@@ -247,19 +186,14 @@ justDetoastEagerly:
 constructResult:
 	MemoryContextSwitchTo(prevcxt);
 
-	p2lro.longVal = 0L;
-	p2lcxt.longVal = 0L;
-	p2lpin.longVal = 0L;
-	p2ldatum.longVal = 0L;
-
-	p2lro.ptrVal = ro;
-	p2lcxt.ptrVal = mc;
-	p2lpin.ptrVal = pin;
-	p2ldatum.ptrVal = vl;
+	jro = PointerGetJLong(ro);
+	jcxt = PointerGetJLong(mc);
+	jpin = PointerGetJLong(pin);
+	jdatum = PointerGetJLong(vl);
 
 	vr = JNI_newObjectLocked(s_VarlenaWrapper_Input_class,
-		s_VarlenaWrapper_Input_init, pljava_DualState_key(),
-		p2lro.longVal, p2lcxt.longVal, p2lpin.longVal, p2ldatum.longVal,
+		s_VarlenaWrapper_Input_init,
+		jro, jcxt, jpin, jdatum,
 		(jlong)parked, (jlong)actual, dbb);
 
 	if ( NULL != dbb )
@@ -286,9 +220,9 @@ jobject pljava_VarlenaWrapper_Output(MemoryContext parent, ResourceOwner ro)
 	jobject vos;
 	jobject dbb;
 	MemoryContext mc;
-	Ptr2Long p2lro;
-	Ptr2Long p2lcxt;
-	Ptr2Long p2ldatum;
+	jlong jro;
+	jlong jcxt;
+	jlong jdatum;
 
 	mc = AllocSetContextCreate(parent, "PL/Java VarlenaWrapper.Output",
 		 ALLOCSET_START_SMALL_SIZES);
@@ -310,13 +244,9 @@ jobject pljava_VarlenaWrapper_Output(MemoryContext parent, ResourceOwner ro)
 	evosh->tail->next = evosh->tail;
 	/* evosh->tail->size will be filled in by _nextBuffer() later */
 
-	p2lro.longVal = 0L;
-	p2lcxt.longVal = 0L;
-	p2ldatum.longVal = 0L;
-
-	p2lro.ptrVal = ro;
-	p2lcxt.ptrVal = mc;
-	p2ldatum.ptrVal = DatumGetPointer(EOHPGetRWDatum(&(evosh->hdr)));
+	jro = PointerGetJLong(ro);
+	jcxt = PointerGetJLong(mc);
+	jdatum = PointerGetJLong(DatumGetPointer(EOHPGetRWDatum(&(evosh->hdr))));
 
 	/*
 	 * The data bytes begin right after the node header struct.
@@ -324,8 +254,8 @@ jobject pljava_VarlenaWrapper_Output(MemoryContext parent, ResourceOwner ro)
 	dbb = JNI_newDirectByteBuffer(evosh->tail + 1, INITIALSIZE);
 
 	vos = JNI_newObjectLocked(s_VarlenaWrapper_Output_class,
-			s_VarlenaWrapper_Output_init, pljava_DualState_key(),
-			p2lro.longVal, p2lcxt.longVal, p2ldatum.longVal, dbb);
+			s_VarlenaWrapper_Output_init,
+			jro, jcxt, jdatum, dbb);
 	JNI_deleteLocalRef(dbb);
 
 	return vos;
@@ -341,26 +271,10 @@ jobject pljava_VarlenaWrapper_Output(MemoryContext parent, ResourceOwner ro)
  */
 Datum pljava_VarlenaWrapper_adopt(jobject vlw)
 {
-	Ptr2Long p2l;
-#if PG_VERSION_NUM < 90500
-	ExpandedObjectHeader *eohptr;
-	Size final_size;
-	void *final_result;
-#endif
+	jlong adopted;
 
-	p2l.longVal = JNI_callLongMethodLocked(vlw, s_VarlenaWrapper_adopt,
-					pljava_DualState_key());
-#if PG_VERSION_NUM >= 90500
-	return PointerGetDatum(p2l.ptrVal);
-#else
-	eohptr = p2l.ptrVal;
-	if ( -1 != eohptr->magic )
-		return PointerGetDatum(eohptr);
-	final_size = VOS_get_flat_size(eohptr);
-	final_result = MemoryContextAlloc(eohptr->eoh_context, final_size);
-	VOS_flatten_into(eohptr, final_result, final_size);
-	return PointerGetDatum(final_result);
-#endif
+	adopted = JNI_callLongMethodLocked(vlw, s_DatumImpl_adopt);
+	return PointerGetDatum(JLongGet(Pointer, adopted));
 }
 
 static Size VOS_get_flat_size(ExpandedObjectHeader *eohptr)
@@ -376,9 +290,6 @@ static void VOS_flatten_into(ExpandedObjectHeader *eohptr,
 	ExpandedVarlenaOutputStreamHeader *evosh =
 		(ExpandedVarlenaOutputStreamHeader *)eohptr;
 	ExpandedVarlenaOutputStreamNode *node = evosh->tail;
-#if PG_VERSION_NUM < 90500
-	ExpandedVarlenaOutputStreamNode *next;
-#endif
 
 	Assert(allocated_size == evosh->total_size);
 	SET_VARSIZE(result, allocated_size);
@@ -391,25 +302,6 @@ static void VOS_flatten_into(ExpandedObjectHeader *eohptr,
 		result = (char *)result + node->size;
 	}
 	while ( node != evosh->tail );
-
-#if PG_VERSION_NUM < 90500
-	/*
-	 * It's been flattened into the same context; the original nodes can be
-	 * freed so the 2x memory usage doesn't last longer than necessary. Freeing
-	 * them retail isn't ideal, but this is back-compatibility code. Remember
-	 * the first one wasn't a separate allocation.
-	 */
-	 node = node->next; /* this is the head, the one that can't be pfreed */
-	 evosh->tail = node; /* tail is now head, the non-pfreeable node */
-	 node = node->next;
-	 while ( node != evosh->tail )
-	 {
-		next = node->next;
-		pfree(node);
-		node = next;
-	 }
-	 pfree(evosh);
-#endif
 }
 
 void pljava_VarlenaWrapper_initialize(void)
@@ -444,6 +336,9 @@ void pljava_VarlenaWrapper_initialize(void)
 		{ 0, 0, 0 }
 	};
 
+	s_DatumImpl_class =
+		(jclass)JNI_newGlobalRef(PgObject_getJavaClass(
+			"org/postgresql/pljava/pg/DatumImpl"));
 	s_VarlenaWrapper_class =
 		(jclass)JNI_newGlobalRef(PgObject_getJavaClass(
 			"org/postgresql/pljava/internal/VarlenaWrapper"));
@@ -456,17 +351,14 @@ void pljava_VarlenaWrapper_initialize(void)
 
 	s_VarlenaWrapper_Input_init = PgObject_getJavaMethod(
 		s_VarlenaWrapper_Input_class, "<init>",
-		"(Lorg/postgresql/pljava/internal/DualState$Key;"
-		"JJJJJJLjava/nio/ByteBuffer;)V");
+		"(JJJJJJLjava/nio/ByteBuffer;)V");
 
 	s_VarlenaWrapper_Output_init = PgObject_getJavaMethod(
 		s_VarlenaWrapper_Output_class, "<init>",
-		"(Lorg/postgresql/pljava/internal/DualState$Key;"
-		"JJJLjava/nio/ByteBuffer;)V");
+		"(JJJLjava/nio/ByteBuffer;)V");
 
-	s_VarlenaWrapper_adopt = PgObject_getJavaMethod(
-		s_VarlenaWrapper_class, "adopt",
-		"(Lorg/postgresql/pljava/internal/DualState$Key;)J");
+	s_DatumImpl_adopt = PgObject_getJavaMethod(
+		s_DatumImpl_class, "adopt", "()J");
 
 	clazz = PgObject_getJavaClass(
 			"org/postgresql/pljava/internal/VarlenaWrapper$Input$State");
@@ -495,15 +387,10 @@ JNIEXPORT void JNICALL
 Java_org_postgresql_pljava_internal_VarlenaWrapper_00024Input_00024State__1unregisterSnapshot
   (JNIEnv *env, jobject _this, jlong snapshot, jlong ro)
 {
-#if PG_VERSION_NUM >= 80400
 	BEGIN_NATIVE_NO_ERRCHECK
-	Ptr2Long p2lsnap;
-	Ptr2Long p2lro;
-	p2lsnap.longVal = snapshot;
-	p2lro.longVal = ro;
-	UnregisterSnapshotFromOwner(p2lsnap.ptrVal, p2lro.ptrVal);
+	UnregisterSnapshotFromOwner(
+		JLongGet(Snapshot, snapshot), JLongGet(ResourceOwner, ro));
 	END_NATIVE
-#endif
 }
 
 /*
@@ -515,42 +402,26 @@ JNIEXPORT jobject JNICALL
 Java_org_postgresql_pljava_internal_VarlenaWrapper_00024Input_00024State__1detoast
   (JNIEnv *env, jobject _this, jlong vl, jlong cxt, jlong snap, jlong resOwner)
 {
-	Ptr2Long p2lvl;
-	Ptr2Long p2lcxt;
-#if PG_VERSION_NUM >= 80400
-	Ptr2Long p2lsnap;
-	Ptr2Long p2lro;
-#endif
-	Ptr2Long p2ldetoasted;
+	_VL_TYPE vlp = JLongGet(_VL_TYPE, vl);
 	_VL_TYPE detoasted;
 	MemoryContext prevcxt;
 	jobject dbb = NULL;
 
 	BEGIN_NATIVE_NO_ERRCHECK
 
-	p2lvl.longVal = vl;
-	p2lcxt.longVal = cxt;
-#if PG_VERSION_NUM >= 80400
-	p2lsnap.longVal = snap;
-	p2lro.longVal = resOwner;
-#endif
+	prevcxt = MemoryContextSwitchTo(JLongGet(MemoryContext, cxt));
 
-	prevcxt = MemoryContextSwitchTo((MemoryContext)p2lcxt.ptrVal);
-
-	detoasted = (_VL_TYPE) PG_DETOAST_DATUM_COPY(PointerGetDatum(p2lvl.ptrVal));
-	p2ldetoasted.longVal = 0L;
-	p2ldetoasted.ptrVal = detoasted;
+	detoasted = (_VL_TYPE) PG_DETOAST_DATUM_COPY(PointerGetDatum(vlp));
 
 	MemoryContextSwitchTo(prevcxt);
 
 	JNI_setLongField(_this,
-		s_VarlenaWrapper_Input_State_varlena, p2ldetoasted.longVal);
-	pfree(p2lvl.ptrVal);
+		s_VarlenaWrapper_Input_State_varlena, PointerGetJLong(detoasted));
+	pfree(vlp);
 
-#if PG_VERSION_NUM >= 80400
 	if ( 0 != snap )
-		UnregisterSnapshotFromOwner(p2lsnap.ptrVal, p2lro.ptrVal);
-#endif
+		UnregisterSnapshotFromOwner(
+			JLongGet(Snapshot, snap), JLongGet(ResourceOwner, resOwner));
 
 	dbb = JNI_newDirectByteBuffer(
 		VARDATA(detoasted), VARSIZE_ANY_EXHDR(detoasted));
@@ -576,24 +447,18 @@ Java_org_postgresql_pljava_internal_VarlenaWrapper_00024Input_00024State__1detoa
 JNIEXPORT jlong JNICALL Java_org_postgresql_pljava_internal_VarlenaWrapper_00024Input_00024State__1fetch
   (JNIEnv *env, jobject _this, jlong varlena, jlong memContext)
 {
-	Ptr2Long p2lvl;
-	Ptr2Long p2lcxt;
+	_VL_TYPE vl = JLongGet(_VL_TYPE, varlena);
 	MemoryContext prevcxt;
-	_VL_TYPE fetched;
-
-	p2lvl.longVal = varlena;
-	p2lcxt.longVal = memContext;
+	_VL_TYPE fetched = NULL;
 
 	BEGIN_NATIVE_NO_ERRCHECK;
-	prevcxt = MemoryContextSwitchTo((MemoryContext) p2lcxt.ptrVal);
-	fetched = detoast_external_attr((_VL_TYPE) p2lvl.ptrVal);
-	pfree(p2lvl.ptrVal);
-	p2lvl.longVal = 0L;
-	p2lvl.ptrVal = fetched;
+	prevcxt = MemoryContextSwitchTo(JLongGet(MemoryContext, memContext));
+	fetched = detoast_external_attr(vl);
+	pfree(vl);
 	MemoryContextSwitchTo(prevcxt);
 	END_NATIVE;
 
-	return p2lvl.longVal;
+	return PointerGetJLong(fetched);
 }
 
 /*
@@ -608,12 +473,8 @@ Java_org_postgresql_pljava_internal_VarlenaWrapper_00024Output_00024State__1next
 {
 	ExpandedVarlenaOutputStreamHeader *evosh;
 	ExpandedVarlenaOutputStreamNode *node;
-	Ptr2Long p2l;
-	Datum d;
+	Datum d = PointerGetDatum(JLongGet(Pointer, varlenaPtr));
 	jobject dbb = NULL;
-
-	p2l.longVal = varlenaPtr;
-	d = PointerGetDatum(p2l.ptrVal);
 
 	evosh = (ExpandedVarlenaOutputStreamHeader *)DatumGetEOHP(d);
 	evosh->tail->size  = currentBufPosition;

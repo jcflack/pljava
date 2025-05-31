@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2022 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -23,12 +23,13 @@
 #include <fmgr.h>
 #include <access/heapam.h>
 #include <utils/syscache.h>
+#include <utils/timeout.h>
 #include <catalog/catalog.h>
 #include <catalog/pg_proc.h>
 #include <catalog/pg_type.h>
 
 #if PG_VERSION_NUM >= 120000
- #ifdef HAVE_DLOPEN
+ #if defined(HAVE_DLOPEN)  ||  PG_VERSION_NUM >= 160000 && ! defined(WIN32)
  #include <dlfcn.h>
  #endif
  #define pg_dlopen(f) dlopen((f), RTLD_NOW | RTLD_GLOBAL)
@@ -47,6 +48,8 @@
 
 #include "org_postgresql_pljava_internal_Backend.h"
 #include "org_postgresql_pljava_internal_Backend_EarlyNatives.h"
+#include "pljava/ModelConstants.h"
+#include "pljava/ModelUtils.h"
 #include "pljava/DualState.h"
 #include "pljava/Invocation.h"
 #include "pljava/InstallHelper.h"
@@ -57,10 +60,6 @@
 #include "pljava/Session.h"
 #include "pljava/SPI.h"
 #include "pljava/type/String.h"
-
-#if PG_VERSION_NUM >= 90300
-#include "utils/timeout.h"
-#endif
 
 /* Include the 'magic block' that PostgreSQL 8.2 and up will use to ensure
  * that a module is not loaded into an incompatible server.
@@ -118,7 +117,9 @@ static char* vmoptions;
 static char* modulepath;
 static char* implementors;
 static char* policy_urls;
+static char* allow_unenforced;
 static int   statementCacheSize;
+static bool  allow_unenforced_udt;
 static bool  pljavaDebug;
 static bool  pljavaReleaseLingeringSavepoints;
 static bool  pljavaEnabled;
@@ -145,11 +146,29 @@ extern void Session_initialize(void);
 extern void PgSavepoint_initialize(void);
 extern void XactListener_initialize(void);
 extern void SubXactListener_initialize(void);
+extern void SQLChunkIOOrder_initialize(void);
 extern void SQLInputFromChunk_initialize(void);
 extern void SQLOutputToChunk_initialize(void);
 extern void SQLOutputToTuple_initialize(void);
 
 
+/*
+ * These typedefs are not exposed in Java's jni.h. Apparently you are supposed
+ * to be really determined if you want to use them. These are copy/pasted from
+ * src/hotspot/share/runtime/arguments.hpp. One silver lining is that they can
+ * be spelled here without the * used in the original, enabling them to be used
+ * succinctly to declare matching prototypes.
+ */
+typedef void JNICALL abort_hook_t(void);
+typedef void JNICALL exit_hook_t(jint code);
+typedef jint JNICALL vfprintf_hook_t(FILE *fp, const char *fmt, va_list args)
+	pg_attribute_printf(2, 0);
+
+/*
+ * This private type is used here as a dynamically-sized list of JavaVMOption,
+ * which will later be copied to a struct of type JavaVMInitArgs (a type that
+ * jni.h does expose).
+ */
 typedef struct {
 	JavaVMOption* options;
 	unsigned int  size;
@@ -165,8 +184,9 @@ static void JVMOptList_addVisualVMName(JVMOptList*);
 static void JVMOptList_addModuleMain(JVMOptList*);
 static void addUserJVMOptions(JVMOptList*);
 static char* getModulePath(const char*);
-static jint JNICALL my_vfprintf(FILE*, const char*, va_list)
-	pg_attribute_printf(2, 0);
+static abort_hook_t my_abort;
+static exit_hook_t my_exit;
+static vfprintf_hook_t my_vfprintf;
 static void _destroyJavaVM(int, Datum);
 static void initPLJavaClasses(void);
 static void initJavaSession(void);
@@ -210,6 +230,7 @@ static bool seenModuleMain;
 static char const visualVMprefix[] = "-Dvisualvm.display.name=";
 static char const moduleMainPrefix[] = "-Djdk.module.main=";
 static char const policyUrlsGUC[] = "pljava.policy_urls";
+static char const unenforcedGUC[] = "pljava.allow_unenforced";
 
 /*
  * In a background worker, _PG_init may be called very early, before much of
@@ -236,6 +257,15 @@ static bool deferInit = false;
 static bool warnJEP411 = true;
 
 /*
+ * Becomes true upon initialization of the Backend class if the Java property
+ * setting java.security.manager=disallow was explicitly in pljava.vmoptions.
+ * That is how to request the fallback nothing-is-enforced mode of operation
+ * that is the only mode available on Java >= 24. Only when all Java code is
+ * 100% trusted should PL/Java be run in this mode.
+ */
+static bool withoutEnforcement = false;
+
+/*
  * Don't bother with the warning unless the JVM in use is later than Java 11.
  * 11 is the LTS release prior to the one where JEP 411 gets interesting (17).
  * If a site is sticking to LTS releases, there will be plenty of time to warn
@@ -250,152 +280,151 @@ static bool javaGE17 = false;
 
 static void initsequencer(enum initstage is, bool tolerant);
 
-#if PG_VERSION_NUM >= 90100
-	static bool check_libjvm_location(
-		char **newval, void **extra, GucSource source);
-	static bool check_vmoptions(
-		char **newval, void **extra, GucSource source);
-	static bool check_modulepath(
-		char **newval, void **extra, GucSource source);
-	static bool check_policy_urls(
-		char **newval, void **extra, GucSource source);
-	static bool check_enabled(
-		bool *newval, void **extra, GucSource source);
-	static bool check_java_thread_pg_entry(
-		int *newval, void **extra, GucSource source);
+static bool check_libjvm_location(
+	char **newval, void **extra, GucSource source);
+static bool check_vmoptions(
+	char **newval, void **extra, GucSource source);
+static bool check_modulepath(
+	char **newval, void **extra, GucSource source);
+static bool check_policy_urls(
+	char **newval, void **extra, GucSource source);
+static bool check_enabled(
+	bool *newval, void **extra, GucSource source);
+static bool check_allow_unenforced_udt(
+	bool *newval, void **extra, GucSource source);
+static bool check_java_thread_pg_entry(
+	int *newval, void **extra, GucSource source);
 
-	/* Check hooks will always allow "setting" a value that is the same as
-	 * current; otherwise, it would be frustrating to have just found settings
-	 * that work, and be unable to save them with ALTER DATABASE SET ... because
-	 * the check hook is called for that too, and would say it is too late....
-	 */
+/* Check hooks will always allow "setting" a value that is the same as
+ * current; otherwise, it would be frustrating to have just found settings
+ * that work, and be unable to save them with ALTER DATABASE SET ... because
+ * the check hook is called for that too, and would say it is too late....
+ */
 
-	static bool check_libjvm_location(
-		char **newval, void **extra, GucSource source)
-	{
-		if ( initstage < IS_CAND_JVMOPENED )
-			return true;
-		if ( libjvmlocation == *newval )
-			return true;
-		if ( libjvmlocation && *newval && 0 == strcmp(libjvmlocation, *newval) )
-			return true;
-		GUC_check_errmsg(
-			"too late to change \"pljava.libjvm_location\" setting");
-		GUC_check_errdetail(
-			"Changing the setting can have no effect after "
-			"PL/Java has found and opened the library it points to.");
-		GUC_check_errhint(
-			"To try a different value, exit this session and start a new one.");
-		return false;
-	}
+static bool check_libjvm_location(
+	char **newval, void **extra, GucSource source)
+{
+	if ( initstage < IS_CAND_JVMOPENED )
+		return true;
+	if ( libjvmlocation == *newval )
+		return true;
+	if ( libjvmlocation && *newval && 0 == strcmp(libjvmlocation, *newval) )
+		return true;
+	GUC_check_errmsg(
+		"too late to change \"pljava.libjvm_location\" setting");
+	GUC_check_errdetail(
+		"Changing the setting can have no effect after "
+		"PL/Java has found and opened the library it points to.");
+	GUC_check_errhint(
+		"To try a different value, exit this session and start a new one.");
+	return false;
+}
 
-	static bool check_vmoptions(
-		char **newval, void **extra, GucSource source)
-	{
-		if ( initstage < IS_JAVAVM_OPTLIST )
-			return true;
-		if ( vmoptions == *newval )
-			return true;
-		if ( vmoptions && *newval && 0 == strcmp(vmoptions, *newval) )
-			return true;
-		GUC_check_errmsg(
-			"too late to change \"pljava.vmoptions\" setting");
-		GUC_check_errdetail(
-			"Changing the setting can have no effect after "
-			"PL/Java has started the Java virtual machine.");
-		GUC_check_errhint(
-			"To try a different value, exit this session and start a new one.");
-		return false;
-	}
+static bool check_vmoptions(
+	char **newval, void **extra, GucSource source)
+{
+	if ( initstage < IS_JAVAVM_OPTLIST )
+		return true;
+	if ( vmoptions == *newval )
+		return true;
+	if ( vmoptions && *newval && 0 == strcmp(vmoptions, *newval) )
+		return true;
+	GUC_check_errmsg(
+		"too late to change \"pljava.vmoptions\" setting");
+	GUC_check_errdetail(
+		"Changing the setting can have no effect after "
+		"PL/Java has started the Java virtual machine.");
+	GUC_check_errhint(
+		"To try a different value, exit this session and start a new one.");
+	return false;
+}
 
-	static bool check_modulepath(
-		char **newval, void **extra, GucSource source)
-	{
-		if ( initstage < IS_JAVAVM_OPTLIST )
-			return true;
-		if ( modulepath == *newval )
-			return true;
-		if ( modulepath && *newval && 0 == strcmp(modulepath, *newval) )
-			return true;
-		GUC_check_errmsg(
-			"too late to change \"pljava.module_path\" setting");
-		GUC_check_errdetail(
-			"Changing the setting has no effect after "
-			"PL/Java has started the Java virtual machine.");
-		GUC_check_errhint(
-			"To try a different value, exit this session and start a new one.");
-		return false;
-	}
+static bool check_modulepath(
+	char **newval, void **extra, GucSource source)
+{
+	if ( initstage < IS_JAVAVM_OPTLIST )
+		return true;
+	if ( modulepath == *newval )
+		return true;
+	if ( modulepath && *newval && 0 == strcmp(modulepath, *newval) )
+		return true;
+	GUC_check_errmsg(
+		"too late to change \"pljava.module_path\" setting");
+	GUC_check_errdetail(
+		"Changing the setting has no effect after "
+		"PL/Java has started the Java virtual machine.");
+	GUC_check_errhint(
+		"To try a different value, exit this session and start a new one.");
+	return false;
+}
 
-	static bool check_policy_urls(
-		char **newval, void **extra, GucSource source)
-	{
-		if ( initstage < IS_JAVAVM_OPTLIST )
-			return true;
-		if ( policy_urls == *newval )
-			return true;
-		if ( policy_urls && *newval && 0 == strcmp(policy_urls, *newval) )
-			return true;
-		GUC_check_errmsg(
-			"too late to change \"pljava.policy_urls\" setting");
-		GUC_check_errdetail(
-			"Changing the setting has no effect after "
-			"PL/Java has started the Java virtual machine.");
-		GUC_check_errhint(
-			"To try a different value, exit this session and start a new one.");
-		return false;
-	}
+static bool check_policy_urls(
+	char **newval, void **extra, GucSource source)
+{
+	if ( initstage < IS_JAVAVM_OPTLIST )
+		return true;
+	if ( policy_urls == *newval )
+		return true;
+	if ( policy_urls && *newval && 0 == strcmp(policy_urls, *newval) )
+		return true;
+	GUC_check_errmsg(
+		"too late to change \"pljava.policy_urls\" setting");
+	GUC_check_errdetail(
+		"Changing the setting has no effect after "
+		"PL/Java has started the Java virtual machine.");
+	GUC_check_errhint(
+		"To try a different value, exit this session and start a new one.");
+	return false;
+}
 
-	static bool check_enabled(
-		bool *newval, void **extra, GucSource source)
-	{
-		if ( initstage < IS_PLJAVA_ENABLED )
-			return true;
-		if ( *newval )
-			return true;
-		GUC_check_errmsg(
-			"too late to change \"pljava.enable\" setting");
-		GUC_check_errdetail(
-			"Start-up has progressed past the point where it is checked.");
-		GUC_check_errhint(
-			"For another chance, exit this session and start a new one.");
-		return false;
-	}
+static bool check_enabled(
+	bool *newval, void **extra, GucSource source)
+{
+	if ( initstage < IS_PLJAVA_ENABLED )
+		return true;
+	if ( *newval )
+		return true;
+	GUC_check_errmsg(
+		"too late to change \"pljava.enable\" setting");
+	GUC_check_errdetail(
+		"Start-up has progressed past the point where it is checked.");
+	GUC_check_errhint(
+		"For another chance, exit this session and start a new one.");
+	return false;
+}
 
-	static bool check_java_thread_pg_entry(
-		int *newval, void **extra, GucSource source)
-	{
-		if ( initstage < IS_PLJAVA_FOUND )
-			return true;
-		if ( java_thread_pg_entry == *newval )
-			return true;
-		GUC_check_errmsg(
-			"too late to change \"pljava.java_thread_pg_entry\" setting");
-		GUC_check_errdetail(
-			"Start-up has progressed past the point where it is checked.");
-		GUC_check_errhint(
-			"For another chance, exit this session and start a new one.");
-		return false;
-	}
-#endif
+static bool check_allow_unenforced_udt(
+	bool *newval, void **extra, GucSource source)
+{
+	if ( initstage < IS_PLJAVA_FOUND )
+		return true;
+	if ( *newval  ||  ! allow_unenforced_udt )
+		return true;
+	GUC_check_errmsg(
+		"too late to change \"pljava.allow_unenforced_udt\" setting");
+	GUC_check_errdetail(
+		"Once set, it cannot be reset in the same session.");
+	GUC_check_errhint(
+		"For another chance, exit this session and start a new one.");
+	return false;
+}
 
-#if PG_VERSION_NUM < 90100
-#define errdetail_internal errdetail
-#define ASSIGNHOOK(name,type) \
-	static bool \
-	CppConcat(assign_,name)(type newval, bool doit, GucSource source); \
-	static bool \
-	CppConcat(assign_,name)(type newval, bool doit, GucSource source)
-#define ASSIGNRETURN(thing) return (thing)
-#define ASSIGNRETURNIFCHECK(thing) if (doit) ; else return (thing)
-#define ASSIGNRETURNIFNXACT(thing) \
-	if (! deferInit && pljavaViableXact()) ; else return (thing)
-#define ASSIGNSTRINGHOOK(name) \
-	static const char * \
-	CppConcat(assign_,name)(const char *newval, bool doit, GucSource source); \
-	static const char * \
-	CppConcat(assign_,name)(const char *newval, bool doit, GucSource source)
-#else
+static bool check_java_thread_pg_entry(
+	int *newval, void **extra, GucSource source)
+{
+	if ( initstage < IS_PLJAVA_FOUND )
+		return true;
+	if ( java_thread_pg_entry == *newval )
+		return true;
+	GUC_check_errmsg(
+		"too late to change \"pljava.java_thread_pg_entry\" setting");
+	GUC_check_errdetail(
+		"Start-up has progressed past the point where it is checked.");
+	GUC_check_errhint(
+		"For another chance, exit this session and start a new one.");
+	return false;
+}
+
 #define ASSIGNHOOK(name,type) \
 	static void \
 	CppConcat(assign_,name)(type newval, void *extra); \
@@ -406,7 +435,6 @@ static void initsequencer(enum initstage is, bool tolerant);
 #define ASSIGNRETURNIFNXACT(thing) \
 	if (! deferInit && pljavaViableXact()) ; else return
 #define ASSIGNSTRINGHOOK(name) ASSIGNHOOK(name, const char *)
-#endif
 
 #define ASSIGNENUMHOOK(name) ASSIGNHOOK(name,int)
 #define ENUMBOOTVAL(entry) ((entry).val)
@@ -471,6 +499,15 @@ ASSIGNSTRINGHOOK(policy_urls)
 		ASSIGNRETURNIFNXACT(newval);
 		initsequencer( initstage, true);
 	}
+	ASSIGNRETURN(newval);
+}
+
+ASSIGNSTRINGHOOK(allow_unenforced)
+{
+	ASSIGNRETURNIFCHECK(newval);
+	allow_unenforced = (char *)newval;
+	if ( IS_PLJAVA_FOUND < initstage )
+		Function_clearFunctionCache();
 	ASSIGNRETURN(newval);
 }
 
@@ -658,6 +695,8 @@ static void initsequencer(enum initstage is, bool tolerant)
 			JVMOptList_addVisualVMName(&optList);
 		if ( ! seenModuleMain )
 			JVMOptList_addModuleMain(&optList);
+		JVMOptList_add(&optList, "abort", (void*)my_abort, true);
+		JVMOptList_add(&optList, "exit", (void*)my_exit, true);
 		JVMOptList_add(&optList, "vfprintf", (void*)my_vfprintf, true);
 #ifndef GCJ
 		JVMOptList_add(&optList, "-Xrs", 0, true);
@@ -721,7 +760,7 @@ static void initsequencer(enum initstage is, bool tolerant)
 		}
 		PG_CATCH();
 		{
-			MemoryContextSwitchTo(ctx.upperContext); /* leave ErrorContext */
+			Invocation_switchToUpperContext(); /* leave ErrorContext */
 			Invocation_popBootContext();
 			initstage = IS_MISC_ONCE_DONE;
 			/* We can't stay here...
@@ -755,14 +794,14 @@ static void initsequencer(enum initstage is, bool tolerant)
 					"and \"pljava-api.jar\" files, separated by the correct "
 					"path separator for this platform.")
 					));
-			pljava_DualState_unregister();
+			pljava_ResourceOwner_unregister();
 			_destroyJavaVM(0, 0);
 			goto check_tolerant;
 		}
 		/*FALLTHROUGH*/
 
 	case IS_PLJAVA_FOUND:
-		greeting = InstallHelper_hello();
+		greeting = InstallHelper_hello(); /*adjusts, freezes system properties*/
 		ereport(NULL != pljavaLoadPath ? NOTICE : DEBUG1, (
 				errmsg("PL/Java loaded"),
 				errdetail("versions:\n%s", greeting)));
@@ -796,18 +835,13 @@ static void initsequencer(enum initstage is, bool tolerant)
 			 * are just function parameters with evaluation order unknown.
 			 */
 			StringInfoData buf;
-#if PG_VERSION_NUM >= 90200
-#define MOREHINT \
-				appendStringInfo(&buf, \
-					"using ALTER DATABASE %s SET ... FROM CURRENT or ", \
-					pljavaDbName()),
-#else
-#define MOREHINT
-#endif
+
 			ereport(NOTICE, (
 				errmsg("PL/Java successfully started after adjusting settings"),
 				(initStringInfo(&buf),
-				MOREHINT
+				appendStringInfo(&buf, \
+					"using ALTER DATABASE %s SET ... FROM CURRENT or ", \
+					pljavaDbName()),
 				errhint("The settings that worked should be saved (%s"
 					"in the \"%s\" file). For a reminder of what has been set, "
 					"try: SELECT name, setting FROM pg_settings WHERE name LIKE"
@@ -816,7 +850,7 @@ static void initsequencer(enum initstage is, bool tolerant)
 					superuser()
 						? PG_GETCONFIGOPTION("config_file")
 						: "postgresql.conf"))));
-#undef MOREHINT
+
 			if ( loadAsExtensionFailed )
 			{
 #if PG_VERSION_NUM < 130000
@@ -902,7 +936,7 @@ static void reLogWithChangedLevel(int level)
 	else if ( ERRCODE_WARNING == category || ERRCODE_NO_DATA == category ||
 		ERRCODE_SUCCESSFUL_COMPLETION == category )
 		sqlstate = ERRCODE_INTERNAL_ERROR;
-#if PG_VERSION_NUM >= 90500
+
 	edata->elevel = level;
 	edata->sqlerrcode = sqlstate;
 	PG_TRY();
@@ -916,43 +950,6 @@ static void reLogWithChangedLevel(int level)
 	}
 	PG_END_TRY();
 	FreeErrorData(edata);
-#else
-	if (!errstart(level, edata->filename, edata->lineno,
-				  edata->funcname, NULL))
-	{
-		FreeErrorData(edata);
-		return;
-	}
-
-	errcode(sqlstate);
-	if (edata->message)
-		errmsg("%s", edata->message);
-	if (edata->detail)
-		errdetail("%s", edata->detail);
-	if (edata->detail_log)
-		errdetail_log("%s", edata->detail_log);
-	if (edata->hint)
-		errhint("%s", edata->hint);
-	if (edata->context)
-		errcontext("%s", edata->context); /* this may need to be trimmed */
-#if PG_VERSION_NUM >= 90300
-	if (edata->schema_name)
-		err_generic_string(PG_DIAG_SCHEMA_NAME, edata->schema_name);
-	if (edata->table_name)
-		err_generic_string(PG_DIAG_TABLE_NAME, edata->table_name);
-	if (edata->column_name)
-		err_generic_string(PG_DIAG_COLUMN_NAME, edata->column_name);
-	if (edata->datatype_name)
-		err_generic_string(PG_DIAG_DATATYPE_NAME, edata->datatype_name);
-	if (edata->constraint_name)
-		err_generic_string(PG_DIAG_CONSTRAINT_NAME, edata->constraint_name);
-#endif
-	if (edata->internalquery)
-		internalerrquery(edata->internalquery);
-
-	FreeErrorData(edata);
-	errfinish(0);
-#endif
 }
 
 void _PG_init()
@@ -969,8 +966,7 @@ void _PG_init()
 	 * preparing the launch options before it is launched. PostgreSQL knows what
 	 * it is, but won't directly say; give it some choices and it'll pick one.
 	 * Alternatively, let Maven or Ant determine and add a -D at build time from
-	 * the path.separator property. Maybe that's cleaner? This only works for
-	 * PG_VERSION_NUM >= 90100.
+	 * the path.separator property. Maybe that's cleaner?
 	 */
 	sep = first_path_var_separator(":;");
 	if ( NULL == sep )
@@ -1027,6 +1023,11 @@ static void initPLJavaClasses(void)
 		Java_org_postgresql_pljava_internal_Backend__1isCreatingExtension
 		},
 		{
+		"_allowingUnenforcedUDT",
+		"()Z",
+		Java_org_postgresql_pljava_internal_Backend__1allowingUnenforcedUDT
+		},
+		{
 		"_myLibraryPath",
 		"()Ljava/lang/String;",
 		Java_org_postgresql_pljava_internal_Backend__1myLibraryPath
@@ -1050,6 +1051,11 @@ static void initPLJavaClasses(void)
 		"_defineClass",
 		"(Ljava/lang/String;Ljava/lang/ClassLoader;[B)Ljava/lang/Class;",
 		Java_org_postgresql_pljava_internal_Backend_00024EarlyNatives__1defineClass
+		},
+		{
+		"_window",
+		"(Ljava/lang/Class;)[Ljava/nio/ByteBuffer;",
+		Java_org_postgresql_pljava_internal_Backend_00024EarlyNatives__1window
 		},
 		{ 0, 0, 0 }
 	};
@@ -1078,20 +1084,27 @@ static void initPLJavaClasses(void)
 	javaGT11 = 11 <  javaMajor;
 	javaGE17 = 17 <= javaMajor;
 
+	fID = PgObject_getStaticJavaField(s_Backend_class,\
+		"WITHOUT_ENFORCEMENT", "Z");
+	withoutEnforcement = JNI_getStaticBooleanField(s_Backend_class, fID);
+
 	fID = PgObject_getStaticJavaField(s_Backend_class,
 		"THREADLOCK", "Ljava/lang/Object;");
 	JNI_setThreadLock(JNI_getStaticObjectField(s_Backend_class, fID));
 
+	pljava_ModelConstants_initialize();
 	Invocation_initialize();
 	Exception_initialize2();
-	SPI_initialize();
 	Type_initialize();
+	pljava_ModelUtils_initialize();
 	pljava_DualState_initialize();
+	SPI_initialize();
 	Function_initialize();
 	Session_initialize();
 	PgSavepoint_initialize();
 	XactListener_initialize();
 	SubXactListener_initialize();
+	SQLChunkIOOrder_initialize(); /* safely caches relevant system properties */
 	SQLInputFromChunk_initialize();
 	SQLOutputToChunk_initialize();
 	SQLOutputToTuple_initialize();
@@ -1105,7 +1118,60 @@ int Backend_setJavaLogLevel(int logLevel)
 	s_javaLogLevel = logLevel;
 	return oldLevel;
 }
-	
+
+static const char DEATH_HINT[] =
+	"Depending on log_min_messages and whether logging_collector is active, "
+	"relevant information may be near this message in the server log. If "
+	"during VM startup, pljava.vmoptions and other pljava.* settings should "
+	"be checked for mistakes or incompatibility with the Java version of the "
+	"library pljava.libjvm_location points to. Causes can include a misspelled "
+	"entry in pljava.module_path or a jar that can't be opened on that path. "
+	"If during \"CREATE EXTENSION pljava\" and there is little information in "
+	"the log, try in a new session with LOAD rather than CREATE EXTENSION.";
+
+static void onJVMExitOrAbort(void);
+
+static void JNICALL my_abort()
+{
+	onJVMExitOrAbort();
+	ereport(FATAL, (
+		errcode(ERRCODE_CLASS_SQLJRT),
+		errmsg("PostgreSQL backend exiting because Java VM requested abort"),
+		errdetail("Abort requested %s.",
+			s_startingVM ? "during VM startup" : "by already started VM"),
+		errhint(DEATH_HINT)
+	));
+}
+
+static void JNICALL my_exit(jint code)
+{
+	onJVMExitOrAbort();
+	ereport(FATAL, (
+		errcode(ERRCODE_CLASS_SQLJRT),
+		errmsg("PostgreSQL backend exiting because Java VM requested exit "
+			"with code %d", (int)code),
+		errdetail("Exit requested %s.",
+			s_startingVM ? "during VM startup" : "by already started VM"),
+		errhint(DEATH_HINT)
+	));
+}
+
+static void onJVMExitOrAbort()
+{
+	/*
+	 * We will later hit the proc_exit handler, which will try to destroy the
+	 * already-gone JVM if this reference is non-null.
+	 */
+	s_javaVM = NULL;
+	/*
+	 * This does a PostgreSQL UnregisterResourceReleaseCallback, which should
+	 * be painless if the callback hasn't been registered yet. The key is to
+	 * avoid triggering a ResourceOwner callback that tries a JNI upcall into
+	 * the already-gone JVM.
+	 */
+	pljava_ResourceOwner_unregister();
+}
+
 /**
  * Special purpose logging function called from JNI when verbose is enabled.
  */
@@ -1340,12 +1406,7 @@ static void pljavaQuickDieHandler(int signum)
 }
 
 static sigjmp_buf recoverBuf;
-static void terminationTimeoutHandler(
-#if PG_VERSION_NUM >= 90300
-#else
-	int signum
-#endif
-)
+static void terminationTimeoutHandler()
 {
 	kill(MyProcPid, SIGQUIT);
 	
@@ -1365,34 +1426,11 @@ static void terminationTimeoutHandler(
  */
 static void _destroyJavaVM(int status, Datum dummy)
 {
-	if(s_javaVM == 0)
-	{
-		if ( s_startingVM )
-		{
-			ereport(FATAL, (
-				errcode(ERRCODE_INTERNAL_ERROR),
-				errmsg("the Java VM exited while loading PL/Java"),
-				errdetail(
-					"The Java VM's exit forces this session to end."),
-				errhint(
-					"This has been known to happen when the entry in "
-					"pljava.module_path for the pljava-api jar has been "
-					"misspelled or the jar cannot be opened. If "
-					"logging_collector is active, there may be useful "
-					"information in the log.")
-					));
-		}
-	}
-	else
+	if(s_javaVM != 0)
 	{
 		Invocation ctx;
 #ifdef USE_PLJAVA_SIGHANDLERS
-
-#if PG_VERSION_NUM >= 90300
 		TimeoutId tid;
-#else
-		pqsigfunc saveSigAlrm;
-#endif
 
 		Invocation_pushBootContext(&ctx);
 		if(sigsetjmp(recoverBuf, 1) != 0)
@@ -1400,27 +1438,17 @@ static void _destroyJavaVM(int status, Datum dummy)
 			elog(DEBUG2,
 				"needed to forcibly shut down the Java virtual machine");
 			s_javaVM = 0;
-			currentInvocation = 0;
+			*currentInvocation = ctx; /* popBootContext but VM is gone */
 			return;
 		}
 
-#if PG_VERSION_NUM >= 90300
 		tid = RegisterTimeout(USER_TIMEOUT, terminationTimeoutHandler);
-#else
-		saveSigAlrm = pqsignal(SIGALRM, terminationTimeoutHandler);
-		enable_sig_alarm(5000, false);
-#endif
+		enable_timeout_after(tid, 5000);
 
 		elog(DEBUG2, "shutting down the Java virtual machine");
 		JNI_destroyVM(s_javaVM);
 
-#if PG_VERSION_NUM >= 90300
 		disable_timeout(tid, false);
-#else
-		disable_sig_alarm(false);
-		pqsignal(SIGALRM, saveSigAlrm);
-#endif
-
 #else
 		Invocation_pushBootContext(&ctx);
 		elog(DEBUG2, "shutting down the Java virtual machine");
@@ -1428,7 +1456,7 @@ static void _destroyJavaVM(int status, Datum dummy)
 #endif
 		elog(DEBUG2, "done shutting down the Java virtual machine");
 		s_javaVM = 0;
-		currentInvocation = 0;
+		*currentInvocation = ctx; /* popBootContext but VM is gone */
 	}
 }
 
@@ -1645,12 +1673,7 @@ static jint initializeJavaVM(JVMOptList *optList)
 #define GUCBOOTVAL(v) (v),
 #define GUCBOOTASSIGN(a, v)
 #define GUCFLAGS(f) (f),
-
-#if PG_VERSION_NUM >= 90100
 #define GUCCHECK(h) (h),
-#else
-#define GUCCHECK(h)
-#endif
 
 #define BOOL_GUC(name, short_desc, long_desc, valueAddr, bootValue, context, \
                  flags, check_hook, assign_hook, show_hook) \
@@ -1684,11 +1707,7 @@ static jint initializeJavaVM(JVMOptList *optList)
 #define PLJAVA_LIBJVMDEFAULT "libjvm"
 #endif
 
-#if PG_VERSION_NUM >= 90200
 #define PLJAVA_ENABLE_DEFAULT true
-#else
-#define PLJAVA_ENABLE_DEFAULT false
-#endif
 
 #if PG_VERSION_NUM < 110000
 #define PLJAVA_IMPLEMENTOR_FLAGS GUC_LIST_INPUT | GUC_LIST_QUOTE
@@ -1754,6 +1773,21 @@ static void registerGUCOptions(void)
 		assign_policy_urls,
 		NULL); /* show hook */
 
+	STRING_GUC(
+		unenforcedGUC,
+		"Which PL/Java-based PLs may execute without security enforcement",
+		"List the language names (such as javau) separated by commas. When "
+		"PL/Java is loaded with -Djava.security.manager=disallow (as is "
+		"needed on Java 24 and later), only functions in the languages named "
+		"here can be executed.",
+		&allow_unenforced,
+		NULL, /* boot value */
+		PGC_SUSET,
+		PLJAVA_IMPLEMENTOR_FLAGS | GUC_SUPERUSER_ONLY,
+		NULL, /* check hook */
+		assign_allow_unenforced,
+		NULL); /* show hook */
+
 	BOOL_GUC(
 		"pljava.debug",
 		"Stop the backend to attach a debugger",
@@ -1803,6 +1837,18 @@ static void registerGUCOptions(void)
 		assign_enabled,
 		NULL); /* show hook */
 
+	BOOL_GUC(
+		"pljava.allow_unenforced_udt",
+		"Whether PL/Java-based \"mapped UDT\" data conversion functions are "
+		"allowed to execute without security enforcement",
+		NULL, /* extended description */
+		&allow_unenforced_udt,
+		false, /* boot value */
+		PGC_SUSET,
+		GUC_SUPERUSER_ONLY,    /* flags */
+		check_allow_unenforced_udt, /* check hook */
+		NULL, NULL); /* assign hook, show hook */
+
 	STRING_GUC(
 		"pljava.implementors",
 		"Implementor names recognized in deployment descriptors",
@@ -1847,7 +1893,81 @@ static void registerGUCOptions(void)
 #undef PLJAVA_ENABLE_DEFAULT
 #undef PLJAVA_IMPLEMENTOR_FLAGS
 
-static inline Datum internalCallHandler(bool trusted, PG_FUNCTION_ARGS);
+extern PLJAVADLLEXPORT Datum pljavaDispatchRoutine(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(pljavaDispatchRoutine);
+
+Datum pljavaDispatchRoutine(PG_FUNCTION_ARGS)
+{
+	Invocation ctx;
+	Datum retval = 0;
+
+	/*
+	 * Just in case it could be helpful in offering diagnostics later, hang
+	 * on to an Oid that is known to refer to PL/Java (because it got here).
+	 * It's cheap, and can be followed back to the right language and
+	 * handler function entries later if needed.
+	 *
+	 * Note that doing this here, in a meta-language dispatcher, changes the
+	 * meaning somewhat. No longer is this necessarily an oid for a routine in
+	 * the familiar PL/Java language; it is the oid of a routine in some
+	 * PL/Java-based language. It's still good for pinning down the path to our
+	 * shared object, but is now more ambiguous as far as what pg_language entry
+	 * it identifies. (To some extent, this has been the case for a while now
+	 * anyway, since sqlj.alias_java_language.)
+	 */
+	pljavaOid = fcinfo->flinfo->fn_oid;
+
+	if ( IS_COMPLETE != initstage )
+	{
+		deferInit = false;
+		initsequencer( initstage, false);
+	}
+
+	Invocation_pushInvocation(&ctx);
+	PG_TRY();
+	{
+		retval = pljava_ModelUtils_callDispatch(fcinfo, false);
+		Invocation_popInvocation(false);
+	}
+	PG_CATCH();
+	{
+		Invocation_popInvocation(true);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	return retval;
+}
+
+extern PLJAVADLLEXPORT Datum pljavaDispatchInline(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(pljavaDispatchInline);
+
+Datum pljavaDispatchInline(PG_FUNCTION_ARGS)
+{
+	Invocation ctx;
+
+	if ( IS_COMPLETE != initstage )
+	{
+		deferInit = false;
+		initsequencer( initstage, false);
+	}
+
+	Invocation_pushInvocation(&ctx);
+	PG_TRY();
+	{
+		pljava_ModelUtils_inlineDispatch(fcinfo);
+		Invocation_popInvocation(false);
+	}
+	PG_CATCH();
+	{
+		Invocation_popInvocation(true);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	PG_RETURN_VOID();
+}
+
+static inline Datum legacyCallHandler(PG_FUNCTION_ARGS);
 
 extern PLJAVADLLEXPORT Datum javau_call_handler(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(javau_call_handler);
@@ -1857,7 +1977,7 @@ PG_FUNCTION_INFO_V1(javau_call_handler);
  */
 Datum javau_call_handler(PG_FUNCTION_ARGS)
 {
-	return internalCallHandler(false, fcinfo);
+	return legacyCallHandler(fcinfo);
 }
 
 extern PLJAVADLLEXPORT Datum java_call_handler(PG_FUNCTION_ARGS);
@@ -1868,11 +1988,11 @@ PG_FUNCTION_INFO_V1(java_call_handler);
  */
 Datum java_call_handler(PG_FUNCTION_ARGS)
 {
-	return internalCallHandler(true, fcinfo);
+	return legacyCallHandler(fcinfo);
 }
 
 static inline Datum
-internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
+legacyCallHandler(PG_FUNCTION_ARGS)
 {
 	Invocation ctx;
 	Datum retval = 0;
@@ -1885,7 +2005,7 @@ internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
 	 * It's cheap, and can be followed back to the right language and
 	 * handler function entries later if needed.
 	 */
-	*(trusted ? &pljavaTrustedOid : &pljavaUntrustedOid) = funcoid;
+	pljavaOid = funcoid;
 	if ( IS_COMPLETE != initstage )
 	{
 		deferInit = false;
@@ -1895,8 +2015,7 @@ internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
 	Invocation_pushInvocation(&ctx);
 	PG_TRY();
 	{
-		retval = Function_invoke(
-			funcoid, trusted, forTrigger, false, true, fcinfo);
+		retval = Function_invoke(funcoid, forTrigger, false, true, fcinfo);
 		Invocation_popInvocation(false);
 	}
 	PG_CATCH();
@@ -1908,14 +2027,14 @@ internalCallHandler(bool trusted, PG_FUNCTION_ARGS)
 	return retval;
 }
 
-static Datum internalValidator(bool trusted, PG_FUNCTION_ARGS);
+static Datum internalValidator(PG_FUNCTION_ARGS, bool legacy);
 
 extern PLJAVADLLEXPORT Datum javau_validator(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(javau_validator);
 
 Datum javau_validator(PG_FUNCTION_ARGS)
 {
-	return internalValidator(false, fcinfo);
+	return internalValidator(fcinfo, true);
 }
 
 extern PLJAVADLLEXPORT Datum java_validator(PG_FUNCTION_ARGS);
@@ -1923,40 +2042,49 @@ PG_FUNCTION_INFO_V1(java_validator);
 
 Datum java_validator(PG_FUNCTION_ARGS)
 {
-	return internalValidator(true, fcinfo);
+	return internalValidator(fcinfo, true);
 }
 
-static Datum internalValidator(bool trusted, PG_FUNCTION_ARGS)
+extern PLJAVADLLEXPORT Datum pljavaDispatchValidator(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(pljavaDispatchValidator);
+
+Datum pljavaDispatchValidator(PG_FUNCTION_ARGS)
+{
+	return internalValidator(fcinfo, false);
+}
+
+static Datum internalValidator(PG_FUNCTION_ARGS, bool legacy)
 {
 	Oid funcoid = PG_GETARG_OID(0);
 	Invocation ctx;
-	Oid *oidSaveLocation = NULL;
 
-	if (!CheckFunctionValidatorAccess(fcinfo->flinfo->fn_oid, funcoid))
-		PG_RETURN_VOID();
-
+	bool ok = CheckFunctionValidatorAccess(fcinfo->flinfo->fn_oid, funcoid);
 	/*
-	 * In the call handler, which could be called heavily, funcoid gets
-	 * unconditionally stored to one of these two locations, rather than
-	 * spending extra cycles deciding whether to store it or not. A validator
-	 * will not be called as heavily, and can afford to check here whether
-	 * an Oid needs to be stored or not. The situation to avoid is where
-	 * funcoid gets stored here, as an Oid from which PL/Java's library path can
-	 * be found, but the function then gets rejected by the validator, leaving
-	 * the stored Oid invalid and useless for that purpose. Therefore, choose
-	 * here whether and where to store it, but store it only within the PG_TRY
-	 * block, and replace with InvalidOid again in the PG_CATCH.
+	 * CheckFunctionValidatorAccess reserves a possible future behavior where
+	 * it returns false and this validator should immediately return. Here we
+	 * abuse that convention slightly by first checking an additional constraint
+	 * on function creation in withoutEnforcing mode. That, arguably, is a check
+	 * that should never be skipped, just like the permission checks made in
+	 * CheckFunctionValidatorAccess itself.
 	 */
-	if ( trusted )
-	{
-		if ( InvalidOid == pljavaTrustedOid )
-			oidSaveLocation = &pljavaTrustedOid;
-	}
-	else
-	{
-		if ( InvalidOid == pljavaUntrustedOid )
-			oidSaveLocation = &pljavaUntrustedOid;
-	}
+	if ( withoutEnforcement  && ! superuser() )
+		ereport(ERROR, (
+			errmsg(
+				"PL/Java language restricted to superuser when "
+				"\"java.security.manager\"=\"disallow\""),
+			errdetail(
+				"This PL/Java version enforces security policy using important "
+				"Java features that upstream Java has disabled as of Java 24, "
+				"as described in JEP 486. In Java 18 through 23, enforcement is "
+				"still available, but requires "
+				"\"-Djava.security.manager=allow\" in \"pljava.vmoptions\". "
+				"The alternative \"-Djava.security.manager=disallow\" permits "
+				"use on Java 24 and later, but with no enforcement and no "
+				"distinction between trusted and untrusted. In this mode, only "
+				"a superuser may use even a 'trusted' PL/Java language")
+		));
+	if ( ! ok )
+		PG_RETURN_VOID();
 
 	if ( IS_PLJAVA_INSTALLING > initstage )
 	{
@@ -1980,17 +2108,31 @@ static Datum internalValidator(bool trusted, PG_FUNCTION_ARGS)
 	Invocation_pushInvocation(&ctx);
 	PG_TRY();
 	{
-		if ( NULL != oidSaveLocation )
-			*oidSaveLocation = funcoid;
+		/*
+		 * In the call handler, which could be called heavily, funcoid gets
+		 * unconditionally stored to pljavaOid, rather than spending extra
+		 * cycles deciding whether to store it or not. A validator will not be
+		 * called as heavily, and can afford to check here whether an Oid needs
+		 * to be stored or not. The situation to avoid is where funcoid gets
+		 * stored here, as an Oid from which PL/Java's library path can be
+		 * found, but the function then gets rejected by the validator,
+		 * leaving the stored Oid invalid and useless for that purpose.
+		 * Therefore, choose whether to store it, here within the PG_TRY block,
+		 * but replace with InvalidOid again if the PG_CATCH happens.
+		 */
+		if ( InvalidOid == pljavaOid )
+			pljavaOid = funcoid;
 
-		Function_invoke(
-			funcoid, trusted, false, true, check_function_bodies, NULL);
+		if ( legacy )
+			Function_invoke(funcoid, false, true, check_function_bodies, NULL);
+		else
+			pljava_ModelUtils_callDispatch(fcinfo, true);
 		Invocation_popInvocation(false);
 	}
 	PG_CATCH();
 	{
-		if ( NULL != oidSaveLocation )
-			*oidSaveLocation = InvalidOid;
+		if ( funcoid == pljavaOid )
+			pljavaOid = InvalidOid;
 
 		Invocation_popInvocation(true);
 		PG_RE_THROW();
@@ -2015,7 +2157,7 @@ void Backend_warnJEP411(bool isCommit)
 {
 	static bool warningEmitted = false; /* once only per session */
 
-	if ( warningEmitted  ||  ! warnJEP411 )
+	if ( ! warnJEP411  ||  withoutEnforcement  ||  warningEmitted )
 		return;
 
 	if ( ! isCommit )
@@ -2028,18 +2170,24 @@ void Backend_warnJEP411(bool isCommit)
 
 	ereport(javaGE17 ? WARNING : NOTICE, (
 		errmsg(
-			"[JEP 411] migration advisory: there will be a Java version "
-			"(after Java 17) that will be unable to run PL/Java %s "
-			 "with policy enforcement", SO_VERSION_STRING),
+			"[JEP 411] migration advisory: Java version 24 and later "
+			"cannot run PL/Java %s with policy enforcement", SO_VERSION_STRING),
 		errdetail(
 			"This PL/Java version enforces security policy using important "
-			"Java features that will be phased out in future Java versions. "
-			"Those changes will come in releases after Java 17."),
+			"Java features that upstream Java has disabled as of Java 24, "
+			"as described in JEP 486. In Java 18 through 23, enforcement is "
+			"still available, but requires "
+			"\"-Djava.security.manager=allow\" in \"pljava.vmoptions\". "),
 		errhint(
-			"For migration planning, Java versions up to and including 17 "
-			"remain fully usable with this version of PL/Java, and Java 17 "
-			"is positioned as a long-term support release. For details on "
-			"how PL/Java will adapt, please bookmark "
+			"For migration planning, this version of PL/Java can still "
+			"enforce policy in Java versions up to and including 23, "
+			"and Java 17 and 21 are positioned as long-term support releases. "
+			"Java 24 and later can be used, if wanted, WITH ABSOLUTELY NO "
+			"EXPECTATIONS OF SECURITY POLICY ENFORCEMENT, by adding "
+			"\"-Djava.security.manager=disallow\" in \"pljava.vmoptions\". "
+			"This mode should be considered only if all Java code to be used "
+			"is considered well vetted and trusted. "
+			"For details on how PL/Java will adapt, please bookmark "
 			"https://github.com/tada/pljava/wiki/JEP-411")
 	));
 }
@@ -2069,10 +2217,21 @@ JNICALL Java_org_postgresql_pljava_internal_Backend__1getConfigOption(JNIEnv* en
 		PG_TRY();
 		{
 			const char *value;
-			if ( 0 == strcmp(policyUrlsGUC, key) )
+			if ( 0 != strncmp(policyUrlsGUC, key, 7) )
+				goto fallback;
+			if ( 0 == strcmp(policyUrlsGUC+7, key+7) )
+			{
 				value = policy_urls;
-			else
-				value = PG_GETCONFIGOPTION(key);
+				goto finish;
+			}
+			if ( 0 == strcmp(unenforcedGUC+7, key+7) )
+			{
+				value = allow_unenforced;
+				goto finish;
+			}
+fallback:
+			value = PG_GETCONFIGOPTION(key);
+finish:
 			pfree(key);
 			if(value != 0)
 				result = String_createJavaStringFromNTS(value);
@@ -2175,6 +2334,17 @@ Java_org_postgresql_pljava_internal_Backend__1isCreatingExtension(JNIEnv *env, j
 
 /*
  * Class:     org_postgresql_pljava_internal_Backend
+ * Method:    _allowingUnenforcedUDT
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL
+Java_org_postgresql_pljava_internal_Backend__1allowingUnenforcedUDT(JNIEnv *env, jclass cls)
+{
+	return allow_unenforced_udt;
+}
+
+/*
+ * Class:     org_postgresql_pljava_internal_Backend
  * Method:    _myLibraryPath
  * Signature: ()Ljava/lang/String;
  */
@@ -2187,10 +2357,8 @@ Java_org_postgresql_pljava_internal_Backend__1myLibraryPath(JNIEnv *env, jclass 
 
 	if ( NULL == pljavaLoadPath )
 	{
-		Oid funcoid = pljavaTrustedOid;
+		Oid funcoid = pljavaOid;
 
-		if ( InvalidOid == funcoid )
-			funcoid = pljavaUntrustedOid;
 		if ( InvalidOid == funcoid )
 			return NULL;
 
@@ -2301,4 +2469,33 @@ Java_org_postgresql_pljava_internal_Backend_00024EarlyNatives__1defineClass(JNIE
 	(*env)->ReleaseByteArrayElements(env, image, bytes, JNI_ABORT);
 	(*env)->ReleaseStringUTFChars(env, name, utfName);
 	return newcls;
+}
+
+/*
+ * Class:     org_postgresql_pljava_internal_Backend_EarlyNatives
+ * Method:    _window
+ * Signature: (Ljava/lang/Class;)[Ljava/nio/ByteBuffer;
+ */
+JNIEXPORT jobject JNICALL
+Java_org_postgresql_pljava_internal_Backend_00024EarlyNatives__1window(JNIEnv *env, jclass cls, jclass component)
+{
+	jobject r = (*env)->NewObjectArray(env, (jsize)1, component, NULL);
+	if ( NULL == r )
+		return NULL;
+
+#define POPULATE(thing) do {\
+	jobject b = (*env)->NewDirectByteBuffer(env, \
+	&thing, sizeof thing);\
+	if ( NULL == b )\
+		return NULL;\
+	(*env)->SetObjectArrayElement(env, r, \
+	(jsize)org_postgresql_pljava_internal_Backend_##thing, \
+	b);\
+} while (0)
+
+	POPULATE(check_function_bodies);
+
+#undef POPULATE
+
+	return r;
 }

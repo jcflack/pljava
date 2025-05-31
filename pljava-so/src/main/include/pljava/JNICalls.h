@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2021 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -25,8 +25,12 @@ extern "C" {
 extern jint (JNICALL *pljava_createvm)(JavaVM **, void **, void *);
 
 #define BEGIN_NATIVE_NO_ERRCHECK if(beginNativeNoErrCheck(env)) {
-#define BEGIN_NATIVE if(beginNative(env)) {
+#define BEGIN_NATIVE if(!beginNative(env)) ; else {
 #define END_NATIVE JNI_setEnv(0); }
+
+#define BEGIN_NATIVE_AND_TRY BEGIN_NATIVE PG_TRY(); {
+#define END_NATIVE_AND_CATCH(shortfunc) } PG_CATCH(); { \
+	Exception_throw_ERROR(shortfunc); } PG_END_TRY(); END_NATIVE
 
 /***********************************************************************
  * All calls to and from the JVM uses this header. The calls are implemented
@@ -181,6 +185,7 @@ extern jint         JNI_destroyVM(JavaVM *vm);
 extern jboolean     JNI_exceptionCheck(void);
 extern void         JNI_exceptionClear(void);
 extern void         JNI_exceptionDescribe(void);
+extern void         JNI_exceptionStacktraceAtLevel(jthrowable exh, int elevel);
 extern jthrowable   JNI_exceptionOccurred(void);
 extern jclass       JNI_findClass(const char* className);
 extern jsize        JNI_getArrayLength(jarray array);
@@ -254,6 +259,7 @@ extern void         JNI_setIntField(jobject object, jfieldID field, jint value);
 extern void         JNI_setLongField(jobject object, jfieldID field, jlong value);
 extern void         JNI_setObjectArrayElement(jobjectArray array, jsize index, jobject value);
 extern void			JNI_setThreadLock(jobject lockObject);
+extern void         JNI_setStaticObjectField(jclass clazz, jfieldID field, jobject value);
 extern jint         JNI_throw(jthrowable obj);
 
 #ifdef __cplusplus

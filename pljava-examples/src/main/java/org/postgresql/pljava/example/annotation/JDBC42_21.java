@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2022 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2018-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -11,10 +11,12 @@
  */
 package org.postgresql.pljava.example.annotation;
 
+import java.sql.SQLException;
+
+import org.postgresql.pljava.SessionManager;
+
 import org.postgresql.pljava.annotation.Function;
 import org.postgresql.pljava.annotation.SQLAction;
-
-import org.postgresql.pljava.example.annotation.ConditionalDDR; // for javadoc
 
 /**
  * Exercise new mappings between date/time types and java.time classes
@@ -22,12 +24,9 @@ import org.postgresql.pljava.example.annotation.ConditionalDDR; // for javadoc
  *<p>
  * Defines a method {@link #javaSpecificationGE javaSpecificationGE} that may be
  * of use for other examples.
- *<p>
- * Relies on PostgreSQL-version-specific implementor tags set up in the
- * {@link ConditionalDDR} example.
  */
 @SQLAction(
-	implementor="postgresql_ge_90300",requires="TypeRoundTripper.roundTrip",
+	requires="TypeRoundTripper.roundTrip",
 	install={
 	" SELECT" +
 	"  CASE WHEN every(orig = roundtripped)" +
@@ -138,9 +137,10 @@ public class JDBC42_21
 	 * recent as the argument ('1.6', '1.7', '1.8', '9', '10', '11', ...).
 	 */
 	@Function(schema="javatest", provides="javaSpecificationGE")
-	public static boolean javaSpecificationGE(String want)
+	public static boolean javaSpecificationGE(String want) throws SQLException
 	{
-		String got = System.getProperty("java.specification.version");
+		String got = SessionManager.current().frozenSystemProperties()
+			.getProperty("java.specification.version");
 		if ( want.startsWith("1.") )
 			want = want.substring(2);
 		if ( got.startsWith("1.") )

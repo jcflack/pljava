@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2019 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -57,22 +57,15 @@ jobjectArray pljava_Tuple_createArray(HeapTuple* vals, jint size, bool mustCopy)
 jobject pljava_Tuple_internalCreate(HeapTuple ht, bool mustCopy)
 {
 	jobject jht;
-	Ptr2Long htH;
 
 	if(mustCopy)
 		ht = heap_copytuple(ht);
 
-	htH.longVal = 0L; /* ensure that the rest is zeroed out */
-	htH.ptrVal = ht;
 	/*
-	 * Passing (jlong)0 as the ResourceOwner means this will never be matched by a
-	 * nativeRelease call; that's appropriate (for now) as the Tuple copy is
-	 * being made into JavaMemoryContext, which never gets reset, so only
-	 * unreachability from the Java side will free it.
 	 * XXX? this seems like a lot of tuple copying.
 	 */
 	jht = JNI_newObjectLocked(s_Tuple_class, s_Tuple_init,
-		pljava_DualState_key(), (jlong)0, htH.longVal);
+		PointerGetJLong(ht));
 	return jht;
 }
 
@@ -100,7 +93,7 @@ void pljava_Tuple_initialize(void)
 	s_Tuple_class = JNI_newGlobalRef(PgObject_getJavaClass("org/postgresql/pljava/internal/Tuple"));
 	PgObject_registerNatives2(s_Tuple_class, methods);
 	s_Tuple_init = PgObject_getJavaMethod(s_Tuple_class, "<init>",
-		"(Lorg/postgresql/pljava/internal/DualState$Key;JJ)V");
+		"(J)V");
 
 	cls = TypeClass_alloc("type.Tuple");
 	cls->JNISignature = "Lorg/postgresql/pljava/internal/Tuple;";
@@ -146,13 +139,11 @@ JNIEXPORT jobject JNICALL
 Java_org_postgresql_pljava_internal_Tuple__1getObject(JNIEnv* env, jclass cls, jlong _this, jlong _tupleDesc, jint index, jclass rqcls)
 {
 	jobject result = 0;
-	Ptr2Long p2l;
-	p2l.longVal = _this;
 
 	BEGIN_NATIVE
-	HeapTuple self = (HeapTuple)p2l.ptrVal;
-	p2l.longVal = _tupleDesc;
-	result = pljava_Tuple_getObject((TupleDesc)p2l.ptrVal, self, (int)index, rqcls);
+	HeapTuple self = JLongGet(HeapTuple, _this);
+	result = pljava_Tuple_getObject(JLongGet(TupleDesc, _tupleDesc), self,
+		(int)index, rqcls);
 	END_NATIVE
 	return result;
 }

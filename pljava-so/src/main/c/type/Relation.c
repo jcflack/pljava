@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2019 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -18,7 +18,7 @@
 #include "org_postgresql_pljava_internal_Relation.h"
 #include "pljava/DualState.h"
 #include "pljava/Exception.h"
-#include "pljava/Invocation.h"
+#include "pljava/Function.h"
 #include "pljava/SPI.h"
 #include "pljava/type/Type_priv.h"
 #include "pljava/type/String.h"
@@ -34,24 +34,13 @@ static jmethodID s_Relation_init;
  */
 jobject pljava_Relation_create(Relation r)
 {
-	Ptr2Long p2lr;
-	Ptr2Long p2lro;
-
 	if ( NULL == r )
 		return NULL;
-
-	p2lr.longVal = 0L;
-	p2lr.ptrVal = r;
-
-	p2lro.longVal = 0L;
-	p2lro.ptrVal = currentInvocation;
 
 	return JNI_newObjectLocked(
 			s_Relation_class,
 			s_Relation_init,
-			pljava_DualState_key(),
-			p2lro.longVal,
-			p2lr.longVal);
+			PointerGetJLong(r));
 }
 
 void pljava_Relation_initialize(void)
@@ -84,7 +73,7 @@ void pljava_Relation_initialize(void)
 	s_Relation_class = JNI_newGlobalRef(PgObject_getJavaClass("org/postgresql/pljava/internal/Relation"));
 	PgObject_registerNatives2(s_Relation_class, methods);
 	s_Relation_init = PgObject_getJavaMethod(s_Relation_class, "<init>",
-		"(Lorg/postgresql/pljava/internal/DualState$Key;JJ)V");
+		"(J)V");
 }
 
 /****************************************
@@ -99,10 +88,7 @@ JNIEXPORT jstring JNICALL
 Java_org_postgresql_pljava_internal_Relation__1getName(JNIEnv* env, jclass clazz, jlong _this)
 {
 	jstring result = 0;
-	Relation self;
-	Ptr2Long p2l;
-	p2l.longVal = _this;
-	self = (Relation)p2l.ptrVal;
+	Relation self = JLongGet(Relation, _this);
 
 	if(self != 0)
 	{
@@ -132,10 +118,7 @@ JNIEXPORT jstring JNICALL
 Java_org_postgresql_pljava_internal_Relation__1getSchema(JNIEnv* env, jclass clazz, jlong _this)
 {
 	jstring result = 0;
-	Relation self;
-	Ptr2Long p2l;
-	p2l.longVal = _this;
-	self = (Relation)p2l.ptrVal;
+	Relation self = JLongGet(Relation, _this);
 
 	if(self != 0)
 	{
@@ -165,10 +148,7 @@ JNIEXPORT jobject JNICALL
 Java_org_postgresql_pljava_internal_Relation__1getTupleDesc(JNIEnv* env, jclass clazz, jlong _this)
 {
 	jobject result = 0;
-	Relation self;
-	Ptr2Long p2l;
-	p2l.longVal = _this;
-	self = (Relation)p2l.ptrVal;
+	Relation self = JLongGet(Relation, _this);
 
 	if(self != 0)
 	{
@@ -198,23 +178,17 @@ JNIEXPORT jobject JNICALL
 Java_org_postgresql_pljava_internal_Relation__1modifyTuple(JNIEnv* env, jclass clazz, jlong _this, jlong _tuple, jintArray _indexes, jobjectArray _values)
 {
 	jobject result = 0;
-	Relation self;
-	Ptr2Long p2lr;
-	p2lr.longVal = _this;
-	self = (Relation)p2lr.ptrVal;
+	Relation self = JLongGet(Relation, _this);
 
 	if(self != 0 && _tuple != 0)
 	{
-		Ptr2Long p2lt;
-		p2lt.longVal = _tuple;
-
 		BEGIN_NATIVE
-		HeapTuple tuple = (HeapTuple)p2lt.ptrVal;
+		HeapTuple tuple = JLongGet(HeapTuple, _tuple);
 		PG_TRY();
 		{
 			jint idx;
 			TupleDesc tupleDesc = self->rd_att;
-			jobject typeMap = Invocation_getTypeMap();
+			jobject typeMap = Function_currentTypeMap();
 
 			jint   count  = JNI_getArrayLength(_indexes);
 			Datum* values = (Datum*)palloc(count * sizeof(Datum));

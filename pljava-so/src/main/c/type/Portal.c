@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2019 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -22,6 +22,7 @@
 #include "pljava/Exception.h"
 #include "pljava/Invocation.h"
 #include "pljava/HashMap.h"
+#include "pljava/ModelUtils.h"
 #include "pljava/type/Type_priv.h"
 #include "pljava/type/TupleDesc.h"
 #include "pljava/type/Portal.h"
@@ -30,6 +31,10 @@
 #if defined(NEED_MISCADMIN_FOR_STACK_BASE)
 #include <miscadmin.h>
 #endif
+
+#define CONFIRMCONST(c) \
+StaticAssertStmt((c) == (org_postgresql_pljava_internal_Portal_##c), \
+	"Java/C value mismatch for " #c)
 
 static jclass    s_Portal_class;
 static jmethodID s_Portal_init;
@@ -40,19 +45,12 @@ static jmethodID s_Portal_init;
 jobject pljava_Portal_create(Portal portal, jobject jplan)
 {
 	jobject jportal;
-	Ptr2Long p2l;
-	Ptr2Long p2lro;
 	if(portal == 0)
 		return NULL;
 
-	p2l.longVal = 0L; /* ensure that the rest is zeroed out */
-	p2l.ptrVal = portal;
-
-	p2lro.longVal = 0L;
-	p2lro.ptrVal = portal->resowner;
-
 	jportal = JNI_newObjectLocked(s_Portal_class, s_Portal_init,
-		pljava_DualState_key(), p2lro.longVal, p2l.longVal, jplan);
+		PointerGetJLong(portal->resowner),
+		PointerGetJLong(portal->portalContext), PointerGetJLong(portal), jplan);
 
 	return jportal;
 }
@@ -64,6 +62,16 @@ void pljava_Portal_initialize(void)
 	JNINativeMethod methods[] =
 	{
 		{
+		"_getTupleDescriptor",
+		"(J)Lorg/postgresql/pljava/model/TupleDescriptor;",
+		Java_org_postgresql_pljava_internal_Portal__1getTupleDescriptor
+		},
+		{
+		"_makeTupleTableSlot",
+		"(JLorg/postgresql/pljava/model/TupleDescriptor;)Lorg/postgresql/pljava/pg/TupleTableSlotImpl;",
+		Java_org_postgresql_pljava_internal_Portal__1makeTupleTableSlot
+		},
+		{
 		"_getName",
 		"(J)Ljava/lang/String;",
 		Java_org_postgresql_pljava_internal_Portal__1getName
@@ -72,6 +80,11 @@ void pljava_Portal_initialize(void)
 		"_getPortalPos",
 		"(J)J",
 	  	Java_org_postgresql_pljava_internal_Portal__1getPortalPos
+		},
+		{
+		"_getTupleDescriptor",
+		"(J)Lorg/postgresql/pljava/model/TupleDescriptor;",
+		Java_org_postgresql_pljava_internal_Portal__1getTupleDescriptor
 		},
 		{
 		"_getTupleDesc",
@@ -104,12 +117,69 @@ void pljava_Portal_initialize(void)
 	s_Portal_class = JNI_newGlobalRef(PgObject_getJavaClass("org/postgresql/pljava/internal/Portal"));
 	PgObject_registerNatives2(s_Portal_class, methods);
 	s_Portal_init = PgObject_getJavaMethod(s_Portal_class, "<init>",
-		"(Lorg/postgresql/pljava/internal/DualState$Key;JJLorg/postgresql/pljava/internal/ExecutionPlan;)V");
+		"(JJJLorg/postgresql/pljava/internal/ExecutionPlan;)V");
+
+	/*
+	 * Statically assert that the Java code has the right values for these.
+	 * I would rather have this at the top, but these count as statements and
+	 * would trigger a declaration-after-statment warning.
+	 */
+	CONFIRMCONST(FETCH_FORWARD);
+	CONFIRMCONST(FETCH_BACKWARD);
+	CONFIRMCONST(FETCH_ABSOLUTE);
+	CONFIRMCONST(FETCH_RELATIVE);
+
+	/*
+	 * Many SPI functions are declared with 'long' parameters and while
+	 * FETCH_ALL is declared as LONG_MAX everywhere, it's not the same value
+	 * everywhere (Windows has 32-bit longs), so this can't just be a fixed Java
+	 * constant with CONFIRMCONST here. May as well check that the assumption
+	 * FETCH_ALL == LONG_MAX still holds, though.
+	 */
+	StaticAssertStmt((FETCH_ALL) == (LONG_MAX), "Unexpected FETCH_ALL value");
 }
 
 /****************************************
  * JNI methods
  ****************************************/
+
+/*
+ * Class:     org_postgresql_pljava_internal_Portal
+ * Method:    _getTupleDescriptor
+ * Signature: (J)Lorg/postgresql/pljava/model/TupleDescriptor;
+ */
+JNIEXPORT jobject JNICALL
+Java_org_postgresql_pljava_internal_Portal__1getTupleDescriptor(JNIEnv* env, jclass clazz, jlong _this)
+{
+	jobject result = 0;
+	if(_this != 0)
+	{
+		BEGIN_NATIVE
+		result = pljava_TupleDescriptor_create(
+			JLongGet(Portal, _this)->tupDesc, InvalidOid);
+		END_NATIVE
+	}
+	return result;
+}
+
+/*
+ * Class:     org_postgresql_pljava_internal_Portal
+ * Method:    _makeTupleTableSlot
+ * Signature: (JLorg/postgresql/pljava/model/TupleDescriptor;)Lorg/postgresql/pljava/pg/TupleTableSlotImpl;
+ */
+JNIEXPORT jobject JNICALL
+Java_org_postgresql_pljava_internal_Portal__1makeTupleTableSlot(JNIEnv* env, jclass clazz, jlong _this, jobject jtd)
+{
+	jobject result = 0;
+	if(_this != 0)
+	{
+		BEGIN_NATIVE
+		result = pljava_TupleTableSlot_create(JLongGet(Portal, _this)->tupDesc,
+			jtd, &TTSOpsHeapTuple, InvalidOid);
+		END_NATIVE
+	}
+	return result;
+}
 
 /*
  * Class:     org_postgresql_pljava_internal_Portal
@@ -122,9 +192,7 @@ Java_org_postgresql_pljava_internal_Portal__1getPortalPos(JNIEnv* env, jclass cl
 	jlong result = 0;
 	if(_this != 0)
 	{
-		Ptr2Long p2l;
-		p2l.longVal = _this;
-		result = (jlong)((Portal)p2l.ptrVal)->portalPos;
+		result = (jlong)JLongGet(Portal, _this)->portalPos;
 	}
 	return result;
 }
@@ -141,7 +209,6 @@ Java_org_postgresql_pljava_internal_Portal__1fetch(JNIEnv* env, jclass clazz, jl
 	if(_this != 0)
 	{
 		BEGIN_NATIVE
-		Ptr2Long p2l;
 		STACK_BASE_VARS
 		STACK_BASE_PUSH(env)
 
@@ -155,11 +222,10 @@ Java_org_postgresql_pljava_internal_Portal__1fetch(JNIEnv* env, jclass clazz, jl
 		 */
 		pljava_DualState_cleanEnqueuedInstances();
 
-		p2l.longVal = _this;
 		PG_TRY();
 		{
 			Invocation_assertConnect();
-			SPI_cursor_fetch((Portal)p2l.ptrVal, forward == JNI_TRUE,
+			SPI_cursor_fetch(JLongGet(Portal, _this), forward == JNI_TRUE,
 				(long)count);
 			result = (jlong)SPI_processed;
 		}
@@ -186,9 +252,7 @@ Java_org_postgresql_pljava_internal_Portal__1getName(JNIEnv* env, jclass clazz, 
 	if(_this != 0)
 	{
 		BEGIN_NATIVE
-		Ptr2Long p2l;
-		p2l.longVal = _this;
-		result = String_createJavaStringFromNTS(((Portal)p2l.ptrVal)->name);
+		result = String_createJavaStringFromNTS(JLongGet(Portal, _this)->name);
 		END_NATIVE
 	}
 	return result;
@@ -206,9 +270,7 @@ Java_org_postgresql_pljava_internal_Portal__1getTupleDesc(JNIEnv* env, jclass cl
 	if(_this != 0)
 	{
 		BEGIN_NATIVE
-		Ptr2Long p2l;
-		p2l.longVal = _this;
-		result = pljava_TupleDesc_create(((Portal)p2l.ptrVal)->tupDesc);
+		result = pljava_TupleDesc_create(JLongGet(Portal, _this)->tupDesc);
 		END_NATIVE
 	}
 	return result;
@@ -225,9 +287,7 @@ Java_org_postgresql_pljava_internal_Portal__1isAtStart(JNIEnv* env, jclass clazz
 	jboolean result = JNI_FALSE;
 	if(_this != 0)
 	{
-		Ptr2Long p2l;
-		p2l.longVal = _this;
-		result = (jboolean)((Portal)p2l.ptrVal)->atStart;
+		result = (jboolean)JLongGet(Portal, _this)->atStart;
 	}
 	return result;
 }
@@ -243,9 +303,7 @@ Java_org_postgresql_pljava_internal_Portal__1isAtEnd(JNIEnv* env, jclass clazz, 
 	jboolean result = JNI_FALSE;
 	if(_this != 0)
 	{
-		Ptr2Long p2l;
-		p2l.longVal = _this;
-		result = (jboolean)((Portal)p2l.ptrVal)->atEnd;
+		result = (jboolean)JLongGet(Portal, _this)->atEnd;
 	}
 	return result;
 }
@@ -262,15 +320,14 @@ Java_org_postgresql_pljava_internal_Portal__1move(JNIEnv* env, jclass clazz, jlo
 	if(_this != 0)
 	{
 		BEGIN_NATIVE
-		Ptr2Long p2l;
 		STACK_BASE_VARS
 		STACK_BASE_PUSH(env)
 
-		p2l.longVal = _this;
 		PG_TRY();
 		{
 			Invocation_assertConnect();
-			SPI_cursor_move((Portal)p2l.ptrVal, forward == JNI_TRUE, (long)count);
+			SPI_cursor_move(
+				JLongGet(Portal, _this), forward == JNI_TRUE, (long)count);
 			result = (jlong)SPI_processed;
 		}
 		PG_CATCH();

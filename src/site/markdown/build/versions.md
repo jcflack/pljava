@@ -1,13 +1,22 @@
 # Versions of external packages needed to build and use PL/Java
 
-As of mid-2020, the following version constraints are known.
+As of spring 2025, the following version constraints are known.
 
 ## Java
 
 No version of Java before 9 is supported. The PL/Java code
 makes use of Java features first appearing in Java 9.
 
-As for later versions of Java, backward compatibility in the language is
+PL/Java's [security policy enforcement][policy] is available only when the Java
+version at run time is 9 through 23. On Java 24 or later runtime, PL/Java 1.6.x
+can only run [with no policy enforcement][nopolicy]. This is independed of
+the Java version used at build time, and so the availability of enforcement
+can be changed at any time after building, by changing the
+`pljava.libjvm_location` [configuration variable][jvml] to point to a Java
+shared object of a different version.
+
+Other than the loss of policy enforcement in Java 24, backward compatibility
+in the language is
 generally good. Before Java 8, most likely problem areas with a new Java
 version tended to be additions to the JDBC API that PL/Java had not yet
 implemented. Since Java 8, even JDBC additions have not caused problems for
@@ -24,6 +33,11 @@ itself was built with, as long as that later JRE version is used at run time.
 That also allows PL/Java to take advantage of recent Java implementation
 advances such as [class data sharing][cds].
 
+Some builds of Java 20 are affected by a bug, [JDK-8309515][]. PL/Java will
+report an error if it detects it is affected by that bug, and the solution can
+be to use a Java version earlier than 20, or one recent enough to have the bug
+fixed. The bug was fixed in Java 21.
+
 PL/Java has been successfully used with [Oracle Java][orj] and with
 [OpenJDK][], which is available with
 [either the Hotspot or the OpenJ9 JVM][hsj9]. It can also be built and used
@@ -38,6 +52,7 @@ the `mvn` command line.
 [OpenJDK]: https://adoptopenjdk.net/
 [hsj9]: https://www.eclipse.org/openj9/oj9_faq.html
 [GraalVM]: https://www.graalvm.org/
+[JDK-8309515]: https://bugs.openjdk.org/browse/JDK-8309515
 
 ## Maven
 
@@ -56,13 +71,11 @@ versions 4.3.0 or later are recommended in order to avoid a
 
 ## PostgreSQL
 
-PL/Java 1.6.0 does not commit to support PostgreSQL earlier than 9.5.
-(Support for 9.4 or even 9.3 might be feasible to add if there is a pressing
-need.)
+The PL/Java 1.6 series does not support PostgreSQL earlier than 9.5.
 
 More current PostgreSQL versions, naturally, are the focus of development
 and receive more attention in testing.
 
-PL/Java 1.6.0 has been successfully built and run on at least one platform
-with PostgreSQL versions from 13 to 9.5, the latest maintenance
+PL/Java 1.6.9 has been successfully built and run on at least one platform
+with PostgreSQL versions from 17 to 9.5, the latest maintenance
 release for each.

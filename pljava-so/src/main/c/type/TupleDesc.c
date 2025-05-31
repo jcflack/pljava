@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2020 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -18,7 +18,7 @@
 #include "pljava/Backend.h"
 #include "pljava/DualState.h"
 #include "pljava/Exception.h"
-#include "pljava/Invocation.h"
+#include "pljava/Function.h"
 #include "pljava/type/Type_priv.h"
 #include "pljava/type/String.h"
 #include "pljava/type/Tuple.h"
@@ -49,20 +49,10 @@ jobject pljava_TupleDesc_create(TupleDesc td)
 jobject pljava_TupleDesc_internalCreate(TupleDesc td)
 {
 	jobject jtd;
-	Ptr2Long tdH;
 
 	td = CreateTupleDescCopyConstr(td);
-	tdH.longVal = 0L; /* ensure that the rest is zeroed out */
-	tdH.ptrVal = td;
-	/*
-	 * Passing (jlong)0 as the ResourceOwner means this will never be matched by a
-	 * nativeRelease call; that's appropriate (for now) as the TupleDesc copy is
-	 * being made into JavaMemoryContext, which never gets reset, so only
-	 * unreachability from the Java side will free it.
-	 * XXX what about invalidating if DDL alters the column layout?
-	 */
 	jtd = JNI_newObjectLocked(s_TupleDesc_class, s_TupleDesc_init,
-		pljava_DualState_key(), (jlong)0, tdH.longVal, (jint)td->natts);
+		PointerGetJLong(td), (jint)td->natts);
 	return jtd;
 }
 
@@ -82,7 +72,7 @@ Type pljava_TupleDesc_getColumnType(TupleDesc tupleDesc, int index)
 		type = 0;
 	}
 	else /* Type_objectTypeFromOid returns boxed types, when that matters */
-		type = Type_objectTypeFromOid(typeId, Invocation_getTypeMap());
+		type = Type_objectTypeFromOid(typeId, Function_currentTypeMap());
 	return type;
 }
 
@@ -125,7 +115,7 @@ void pljava_TupleDesc_initialize(void)
 	s_TupleDesc_class = JNI_newGlobalRef(PgObject_getJavaClass("org/postgresql/pljava/internal/TupleDesc"));
 	PgObject_registerNatives2(s_TupleDesc_class, methods);
 	s_TupleDesc_init = PgObject_getJavaMethod(s_TupleDesc_class, "<init>",
-		"(Lorg/postgresql/pljava/internal/DualState$Key;JJI)V");
+		"(JI)V");
 
 	cls = TypeClass_alloc("type.TupleDesc");
 	cls->JNISignature = "Lorg/postgresql/pljava/internal/TupleDesc;";
@@ -152,9 +142,7 @@ Java_org_postgresql_pljava_internal_TupleDesc__1getColumnName(JNIEnv* env, jclas
 	PG_TRY();
 	{
 		char* name;
-		Ptr2Long p2l;
-		p2l.longVal = _this;
-		name = SPI_fname((TupleDesc)p2l.ptrVal, (int)index);
+		name = SPI_fname(JLongGet(TupleDesc, _this), (int)index);
 		if(name == 0)
 		{
 			Exception_throw(ERRCODE_INVALID_DESCRIPTOR_INDEX,
@@ -189,11 +177,9 @@ Java_org_postgresql_pljava_internal_TupleDesc__1getColumnIndex(JNIEnv* env, jcla
 	char* name = String_createNTS(colName);
 	if(name != 0)
 	{
-		Ptr2Long p2l;
-		p2l.longVal = _this;
 		PG_TRY();
 		{
-			result = SPI_fnumber((TupleDesc)p2l.ptrVal, name);
+			result = SPI_fnumber(JLongGet(TupleDesc, _this), name);
 			if(result == SPI_ERROR_NOATTRIBUTE)
 			{
 				Exception_throw(ERRCODE_UNDEFINED_COLUMN,
@@ -222,18 +208,16 @@ Java_org_postgresql_pljava_internal_TupleDesc__1formTuple(JNIEnv* env, jclass cl
 	jobject result = 0;
 
 	BEGIN_NATIVE
-	Ptr2Long p2l;
-	p2l.longVal = _this;
 	PG_TRY();
 	{
 		jint   idx;
 		HeapTuple tuple;
 		MemoryContext curr;
-		TupleDesc self = (TupleDesc)p2l.ptrVal;
+		TupleDesc self = JLongGet(TupleDesc, _this);
 		int    count   = self->natts;
 		Datum* values  = (Datum*)palloc(count * sizeof(Datum));
 		bool*  nulls   = palloc(count * sizeof(bool));
-		jobject typeMap = Invocation_getTypeMap(); /* a global ref */
+		jobject typeMap = Function_currentTypeMap(); /* a global ref */
 
 		memset(values, 0,  count * sizeof(Datum));
 		memset(nulls, true, count * sizeof(bool));/*all values null initially*/
@@ -278,11 +262,9 @@ Java_org_postgresql_pljava_internal_TupleDesc__1getOid(JNIEnv* env, jclass cls, 
 	jobject result = 0;
 	
 	BEGIN_NATIVE
-	Ptr2Long p2l;
-	p2l.longVal = _this;
 	PG_TRY();
 	{
-		Oid typeId = SPI_gettypeid((TupleDesc)p2l.ptrVal, (int)index);
+		Oid typeId = SPI_gettypeid(JLongGet(TupleDesc, _this), (int)index);
 		if(!OidIsValid(typeId))
 		{
 			Exception_throw(ERRCODE_INVALID_DESCRIPTOR_INDEX,

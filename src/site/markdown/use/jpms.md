@@ -36,10 +36,11 @@ legacy code can be migrated over time:
 
 * A jar file containing legacy, non-modular code should be placed on the
     class path, and is treated as part of an unnamed module that has access
-    to the exports and opens of any other modules, so it will continue to work
-    as it did before Java 9. (Even a jar containing Java 9+ modular code
-    will be treated this way, if found on the class path rather than the
-    module path.)
+    to the exports and opens of all other _readable_ modules. Such code will,
+    therefore, continue to work as it did before Java 9, provided the needed
+    modules are _readable_, as explained below. (Even a jar containing Java 9+
+    modular code will be treated this way, if found on the class path rather
+    than the module path.)
 
 * A jar file can be placed on the module path even if it does not contain
     an explicit named module. In that case, it becomes an "automatic" module,
@@ -54,6 +55,75 @@ implements a version of the ISO SQL Java Routines and Types specification
 that does not include Java module system concepts. Its `sqlj.set_classpath`
 function manipulates an internal class path, not a module path, and a jar
 installed with `sqlj.install_jar` behaves as legacy code in an unnamed module.
+
+## Readable versus observable modules
+
+Using Java's terminology, modules that can be found on the module path are
+_observable_. Not all of those are automatically _readable_; the _readable_
+ones in a JVM instance are initially those encountered, at JVM start-up, in
+the "recursive enumeration" step of [module resolution][resolution].
+
+Recursive enumeration begins with some root modules, and proceeds until all of
+the modules on which they (transitively) depend have been added to the readable
+set. When PL/Java is launched in a session, PL/Java's own module is a root,
+and so the readable modules will include those PL/Java itself depends on,
+such as `java.base`, `java.sql`, and the other modules `java.sql` names with
+`requires transitive` directives.
+
+Those modules may be enough for many uses of PL/Java. However, if code for use
+in PL/Java will refer to other modules,
+[`--add-modules` in `pljava.vmoptions`][addm] can be used to add more roots.
+Because of recursive enumeration, it is enough to add just one module, or a few
+modules, whose dependencies recursively cover whatever modules will be needed.
+
+At one extreme for convenience, Java provides a module, `java.se`, that simply
+declares dependencies on the other modules that make up the full Java SE API.
+Therefore, `--add-modules=java.se` will ensure that any PL/Java code is able to
+refer to any of the Java SE API. However, PL/Java instances may use less memory
+and start up more quickly if an effort is made to add only modules actually
+needed.
+
+### Limiting the module graph
+
+Less conveniently perhaps, but advantageously for memory footprint and quick
+startup, the [`--limit-modules`][limitmods] option can be used. As of this
+writing in early 2025, starting up a simple PL/Java installation on Java 24
+with no `--add-modules` option results in 48 modules resolved, and the 48
+include some unlikely choices for PL/Java purposes, such as `java.desktop`,
+`jdk.unsupported.desktop`, `jdk.javadoc`, and others.
+
+With the option `--limit-modules=org.postgresql.pljava.internal` added, only
+nine modules are resolved---the transitive closure of those required by PL/Java
+itself---and all of PL/Java's supplied examples successfully run.
+
+The `--add-modules` option can then be used to make any other actually-needed
+modules available again. Those named with `--add-modules` are implicitly added
+to those named with `--limit-modules`, so there is no need to change the
+`--limit-modules` setting when adding another module. For example,
+
+```
+--limit-modules=org.postgresql.pljava.internal --add-modules=java.net.http
+```
+
+will allow use of `java.net.http` in addition to the nine modules resolved for
+PL/Java itself.
+
+Limiting the module graph can be especially advisable when running PL/Java with
+no security policy enforcement, as required on stock Java 24 and later. The page
+[PL/Java with no policy enforcement][unenforced] should be carefully reviewed
+for other implications of running PL/Java that way.
+
+The supplied [examples jar][examples] provides a function, [java_modules][],
+that can be used to see what modules have been resolved into Java's boot module
+layer.
+
+For more detail on why the boot layer includes the modules it does,
+`-Djdk.module.showModuleResolution=true` can be added temporarily in
+`pljava.vmoptions`, and a log of module requirements and bindings will be sent
+to the standard output of the backend process when PL/Java starts. PostgreSQL,
+however, may normally start backend processes with standard output going
+nowhere, so the logged information may be invisible unless running PostgreSQL
+in [a test harness][node].
 
 ## Configuring the launch-time module path
 
@@ -84,4 +154,11 @@ the usual way. It can be set by adding a `-Djava.class.path=...` in the
 is simply the jar file pathnames, separated by the platform's path separator
 character.
 
-[jpms]: http://cr.openjdk.java.net/~mr/jigsaw/spec/
+[jpms]: https://cr.openjdk.java.net/~mr/jigsaw/spec/
+[resolution]: https://docs.oracle.com/javase/9/docs/api/java/lang/module/package-summary.html#resolution
+[addm]: ../install/vmoptions.html#Adding_to_the_set_of_readable_modules
+[limitmods]: https://openjdk.org/jeps/261#Limiting-the-observable-modules
+[unenforced]: unenforced.html
+[examples]: ../examples/examples.html
+[java_modules]: ../pljava-examples/apidocs/org/postgresql/pljava/example/annotation/Modules.html#method-detail
+[node]: ../develop/node.html

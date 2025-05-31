@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2021 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2016-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -37,11 +37,6 @@ import static java.lang.invoke.MethodType.methodType;
 import java.lang.invoke.WrongMethodTypeException;
 
 import java.lang.reflect.Array;
-import java.lang.reflect.Method;
-import java.lang.reflect.GenericDeclaration;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
-import java.lang.reflect.TypeVariable;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -55,6 +50,7 @@ import java.security.ProtectionDomain;
 import java.sql.ResultSet;
 import java.sql.SQLData;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLInput;
 import java.sql.SQLOutput;
 import java.sql.SQLNonTransientException;
@@ -67,6 +63,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -81,6 +78,9 @@ import org.postgresql.pljava.ResultSetProvider;
 import org.postgresql.pljava.sqlgen.Lexicals.Identifier;
 
 import static org.postgresql.pljava.internal.Backend.doInPG;
+import static org.postgresql.pljava.internal.Backend.getListConfigOption;
+import static org.postgresql.pljava.internal.Backend.WITHOUT_ENFORCEMENT;
+import static org.postgresql.pljava.internal.Backend.allowingUnenforcedUDT;
 import org.postgresql.pljava.internal.EntryPoints;
 import org.postgresql.pljava.internal.EntryPoints.Invocable;
 import static org.postgresql.pljava.internal.EntryPoints.invocable;
@@ -770,7 +770,7 @@ public class Function
 		}
 
 		/**
-		 * Pop a stacked parameter frame; called only vi JNI, only when
+		 * Pop a stacked parameter frame; called only via JNI, only when
 		 * the current invocation is known to have pushed one.
 		 */
 		private static void pop()
@@ -1318,6 +1318,18 @@ public class Function
 	{
 		Matcher info = parse(procTup);
 
+		/*
+		 * Reject any TRANSFORM FOR TYPE clause at validation time, on
+		 * the grounds that it will get ignored at invocation time anyway.
+		 * The check could be made unconditional, and so catch at invocation
+		 * time any function that might have been declared before this validator
+		 * check was added. But simply ignoring the clause at invocation time
+		 * (as promised...) keeps that path leaner.
+		 */
+		if ( forValidator  &&  null != procTup.getObject("protrftypes") )
+			throw new SQLFeatureNotSupportedException(
+				"a PL/Java function will not apply TRANSFORM FOR TYPE","0A000");
+
 		if ( forValidator  &&  ! checkBody )
 			return null;
 
@@ -1494,17 +1506,44 @@ public class Function
 	 * conditions. No exception is made here for the few functions supplied by
 	 * PL/Java's own {@code Commands} class; they get a lid. It is reasonable to
 	 * ask them to use {@code doPrivileged} when appropriate.
+	 *<p>
+	 * When {@code WITHOUT_ENFORCEMENT} is true, any nonnull <var>language</var>
+	 * must be named in {@code pljava.allow_unenforced}. PL/Java's own functions
+	 * in the {@code Commands} class are exempt from that check.
 	 */
 	private static AccessControlContext accessControlContextFor(
 		Class<?> clazz, String language, boolean trusted)
+	throws SQLException
 	{
+		Identifier.Simple langIdent = null;
+		if ( null != language )
+			langIdent = Identifier.Simple.fromCatalog(language);
+
+		if ( WITHOUT_ENFORCEMENT  &&  clazz != Commands.class )
+		{
+			if ( null == langIdent )
+			{
+				if ( ! allowingUnenforcedUDT() )
+					throw new SQLNonTransientException(
+						"PL/Java UDT data conversions for " + clazz +
+						" cannot execute because pljava.allow_unenforced_udt" +
+						" is off", "46000");
+			}
+			else if ( Optional.ofNullable(
+					getListConfigOption("pljava.allow_unenforced")
+				).orElseGet(List::of).stream().noneMatch(langIdent::equals) )
+				throw new SQLNonTransientException(
+					"PL \"" + language + "\" not listed in " +
+					"pljava.allow_unenforced configuration setting", "46000");
+		}
+
 		Set<Principal> p =
-			(null == language)
+			(null == langIdent)
 			? Set.of()
 			: Set.of(
 				trusted
-				? new PLPrincipal.Sandboxed(language)
-				: new PLPrincipal.Unsandboxed(language)
+				? new PLPrincipal.Sandboxed(langIdent)
+				: new PLPrincipal.Unsandboxed(langIdent)
 			);
 
 		AccessControlContext acc = clazz.getClassLoader() instanceof Loader
@@ -1826,7 +1865,7 @@ public class Function
 	 * Uncompiled pattern to recognize a Java identifier.
 	 */
 	private static final String javaIdentifier = String.format(
-		"\\p{%1$sStart}\\p{%1sPart}++", "javaJavaIdentifier"
+		"\\p{%1$sStart}\\p{%1sPart}*+", "javaJavaIdentifier"
 	);
 
 	/**
@@ -1878,145 +1917,6 @@ public class Function
 	private static final Pattern typeNameInAS = compile(
 		"(" + javaTypeName + ")(" + arrayDims + ")?+"
 	);
-
-	/**
-	 * Test whether the type {@code t0} is, directly or indirectly,
-	 * a specialization of generic type {@code c0}.
-	 * @param t0 a type to be checked
-	 * @param c0 known generic type to check for
-	 * @return null if {@code t0} does not extend {@code c0}, otherwise the
-	 * array of type arguments with which it specializes {@code c0}
-	 */
-	private static Type[] specialization(Type t0, Class<?> c0)
-	{
-		Type t = t0;
-		Class<?> c;
-		ParameterizedType pt = null;
-		TypeBindings latestBindings = null;
-		Type[] actualArgs = null;
-
-		if ( t instanceof Class )
-		{
-			c = (Class)t;
-			if ( ! c0.isAssignableFrom(c) )
-				return null;
-			if ( c0 == c )
-				return new Type[0];
-		}
-		else if ( t instanceof ParameterizedType )
-		{
-			pt = (ParameterizedType)t;
-			c = (Class)pt.getRawType();
-			if ( ! c0.isAssignableFrom(c) )
-				return null;
-			if ( c0 == c )
-				actualArgs = pt.getActualTypeArguments();
-			else
-				latestBindings = new TypeBindings(null, pt);
-		}
-		else
-			throw new AssertionError(
-				"expected Class or ParameterizedType, got: " + t);
-
-		if ( null == actualArgs )
-		{
-			List<Type> pending = new LinkedList<>();
-			pending.add(c.getGenericSuperclass());
-			addAll(pending, c.getGenericInterfaces());
-
-			while ( ! pending.isEmpty() )
-			{
-				t = pending.remove(0);
-				if ( null == t )
-					continue;
-				if ( t instanceof Class )
-				{
-					c = (Class)t;
-					if ( c0 == c )
-						return new Type[0];
-				}
-				else if ( t instanceof ParameterizedType )
-				{
-					pt = (ParameterizedType)t;
-					c = (Class)pt.getRawType();
-					if ( c0 == c )
-					{
-						actualArgs = pt.getActualTypeArguments();
-						break;
-					}
-					if ( c0.isAssignableFrom(c) )
-						pending.add(new TypeBindings(latestBindings, pt));
-				}
-				else if ( t instanceof TypeBindings )
-				{
-					latestBindings = (TypeBindings)t;
-					continue;
-				}
-				else
-					throw new AssertionError(
-						"expected Class or ParameterizedType, got: " + t);
-				if ( ! c0.isAssignableFrom(c) )
-					continue;
-				pending.add(c.getGenericSuperclass());
-				addAll(pending, c.getGenericInterfaces());
-			}
-		}
-		if ( null == actualArgs )
-			throw new AssertionError(
-				"failed checking whether " + t0 + " specializes " + c0);
-
-		for ( int i = 0; i < actualArgs.length; ++ i )
-			if ( actualArgs[i] instanceof TypeVariable )
-				actualArgs[i] =
-					latestBindings.resolve((TypeVariable)actualArgs[i]);
-
-		return actualArgs;
-	}
-
-	/**
-	 * A class recording the bindings made in a ParameterizedType to the type
-	 * parameters in a GenericDeclaration<Class>. Implements {@code Type} so it
-	 * can be added to the {@code pending} queue in {@code specialization}.
-	 *<p>
-	 * In {@code specialization}, the tree of superclasses/superinterfaces will
-	 * be searched breadth-first, with all of a node's immediate supers enqueued
-	 * before any from the next level. By recording a node's type variable to
-	 * type argument bindings in an object of this class, and enqueueing it
-	 * before any of the node's supers, any type variables encountered as actual
-	 * type arguments to any of those supers should be resolvable in the object
-	 * of this class most recently dequeued.
-	 */
-	static class TypeBindings implements Type
-	{
-		private final TypeVariable<?>[] formalTypeParams;
-		private final Type[] actualTypeArgs;
-
-		TypeBindings(TypeBindings prior, ParameterizedType pt)
-		{
-			actualTypeArgs = pt.getActualTypeArguments();
-			formalTypeParams =
-				((GenericDeclaration)pt.getRawType()).getTypeParameters();
-			assert actualTypeArgs.length == formalTypeParams.length;
-
-			if ( null == prior )
-				return;
-
-			for ( int i = 0; i < actualTypeArgs.length; ++ i )
-			{
-				Type t = actualTypeArgs[i];
-				if ( actualTypeArgs[i] instanceof TypeVariable )
-					actualTypeArgs[i] = prior.resolve((TypeVariable)t);
-			}
-		}
-
-		Type resolve(TypeVariable<?> v)
-		{
-			for ( int i = 0; i < formalTypeParams.length; ++ i )
-				if ( formalTypeParams[i].equals(v) )
-					return actualTypeArgs[i];
-			throw new AssertionError("type binding not found for " + v);
-		}
-	}
 
 	/**
 	 * Wrap the native method to store the values computed in Java, for a

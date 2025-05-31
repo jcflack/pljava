@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2015-2023 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -46,6 +46,44 @@ import javax.tools.Diagnostic.Kind;
 public abstract class Lexicals
 {
 	private Lexicals() { } // do not instantiate
+
+	static
+	{
+		/*
+		 * Reject a Java version affected by JDK-8309515 bug.
+		 */
+		Boolean hasBug = null;
+		Pattern p1 = Pattern.compile("(?<a>.)(?<b>.)");
+		Pattern p2 = Pattern.compile("(?<b>.)(?<a>.)");
+		Matcher m = p1.matcher("xy");
+
+		if ( m.matches() && 0 == m.start("a") )
+		{
+			m.usePattern(p2);
+			if ( m.matches() )
+			{
+				switch ( m.start("a") )
+				{
+				case 0:
+					hasBug = true;
+					break;
+				case 1:
+					hasBug = false;
+					break;
+				}
+			}
+		}
+
+		if ( null == hasBug )
+			throw new ExceptionInInitializerError(
+				"Unexpected result while testing for bug JDK-8309515");
+
+		if ( hasBug )
+			throw new ExceptionInInitializerError(
+				"Java bug JDK-8309515 affects this version of Java. PL/Java " +
+				"requires a Java version earlier than 20 (when the bug first " +
+				"appears) or recent enough to have had the bug fixed.");
+	}
 
 	/** Allowed as the first character of a regular identifier by ISO.
 	 */
@@ -241,7 +279,7 @@ public abstract class Lexicals
 	 * engine, letting it handle the details.
 	 */
 	public static final Pattern NEWLINE = Pattern.compile(
-		"(?ms:$(?:(?<!^).|(?<=\\G).){1,2}+)"
+		"(?ms:$.{1,2}?(?:^|\\z))" // fewest of 1,2 chars between $ and ^ (or \z)
 	);
 
 	/** White space <em>except</em> newline, for any Java-recognized newline.
@@ -495,6 +533,16 @@ public abstract class Lexicals
 		}
 
 		/**
+		 * Whether this instance represents the name of something unnamed.
+		 * @return false except where overridden
+		 * @see None#isUnnamed
+		 */
+		public boolean isUnnamed()
+		{
+			return false;
+		}
+
+		/**
 		 * Ensure deserialization doesn't produce any unknown {@code Identifier}
 		 * subclass.
 		 *<p>
@@ -506,7 +554,7 @@ public abstract class Lexicals
 			in.defaultReadObject();
 			Class<?> c = getClass();
 			if ( c != Simple.class && c != Foldable.class && c != Folding.class
-				&& c != Pseudo.class && c != Operator.class
+				&& c != Pseudo.class && c != None.class && c != Operator.class
 				&& c != Qualified.class )
 				throw new InvalidObjectException(
 					"deserializing unknown Identifier subclass: "
@@ -584,8 +632,9 @@ public abstract class Lexicals
 			 * Concatenates one or more strings or identifiers to the end of
 			 * this identifier.
 			 *<p>
-			 * The arguments may be instances of {@code Simple} or of
-			 * {@code CharSequence}, in any combination.
+			 * The arguments may be instances of {@code Simple} (but not of
+			 * {@link None None}) or of {@code CharSequence}, in any
+			 * combination.
 			 *<p>
 			 * The resulting identifier folds if this identifier and all
 			 * identifier arguments fold and the concatenation (with all
@@ -599,7 +648,7 @@ public abstract class Lexicals
 
 				for ( Object o : more )
 				{
-					if ( o instanceof Simple )
+					if ( o instanceof Simple && ! (o instanceof None) )
 					{
 						Simple si = (Simple)o;
 						foldable = foldable && si.folds();
@@ -613,7 +662,7 @@ public abstract class Lexicals
 					else
 						throw new IllegalArgumentException(
 							"arguments to Identifier.Simple.concat() must be " +
-							"Identifier.Simple or CharSequence");
+							"Identifier.Simple (and not None) or CharSequence");
 				}
 
 				if ( foldable )
@@ -631,6 +680,12 @@ public abstract class Lexicals
 			 * does not have the form of a regular identifier, or if it has that
 			 * form but does not match its pgFold-ed form (without quotes, PG
 			 * would have folded it in that case).
+			 *<p>
+			 * The PostgreSQL catalogs can contain empty strings in some
+			 * contexts where a name might not be provided (for example, when
+			 * {@code pg_proc.proargnames} is present because some parameters
+			 * have names but not all of them do). So this method can accept an
+			 * empty string, returning the {@link None None} instance.
 			 * @param s name of the simple identifier, as found in a system
 			 * catalog.
 			 * @return an Identifier.Simple or subclass appropriate to the form
@@ -638,6 +693,9 @@ public abstract class Lexicals
 			 */
 			public static Simple fromCatalog(String s)
 			{
+				if ( "".equals(s) )
+					return None.INSTANCE;
+
 				if ( PG_REGULAR_IDENTIFIER.matcher(s).matches() )
 				{
 					if ( s.equals(Folding.pgFold(s)) )
@@ -828,6 +886,14 @@ public abstract class Lexicals
 				m_nonFolded = nonFolded;
 			}
 
+			/**
+			 * Used only by {@link None} below.
+			 */
+			private Simple()
+			{
+				m_nonFolded = "";
+			}
+
 			private static String checkLength(String s)
 			{
 				int cpc = s.codePointCount(0, s.length());
@@ -842,6 +908,8 @@ public abstract class Lexicals
 			throws IOException, ClassNotFoundException
 			{
 				in.defaultReadObject();
+				if ( this instanceof None )
+					return;
 				String diag = checkLength(m_nonFolded);
 				if ( null != diag )
 					throw new InvalidObjectException(diag);
@@ -1066,6 +1134,81 @@ public abstract class Lexicals
 					throw new InvalidObjectException(
 						"not a known Pseudo-identifier: " + m_nonFolded);
 				}
+			}
+		}
+
+		/**
+		 * What is the name of an unnamed parameter or column?
+		 */
+		public static final class None extends Simple
+		{
+			private static final long serialVersionUID = 1L;
+
+			public static final None INSTANCE = new None();
+
+			/**
+			 * A {@code None} identifier never equals anything.
+			 */
+			@Override
+			public boolean equals(Object other)
+			{
+				return false;
+			}
+
+			/**
+			 * True.
+			 */
+			@Override
+			public boolean isUnnamed()
+			{
+				return true;
+			}
+
+			private None()
+			{
+			}
+
+			private Object readResolve() throws ObjectStreamException
+			{
+				switch ( m_nonFolded )
+				{
+				case "": return INSTANCE;
+				default:
+					throw new InvalidObjectException(
+						"not the string value of None: " + m_nonFolded);
+				}
+			}
+
+			/**
+			 * Returns this object if there are zero arguments; otherwise throws
+			 * {@link IllegalArgumentException}.
+			 */
+			@Override
+			public Simple concat(Object... more)
+			{
+				if ( 0 == more.length )
+					return this;
+				throw new IllegalArgumentException(
+					"may not concatenate anything to None");
+			}
+
+			/**
+			 * Throws {@link UnsupportedOperationException}.
+			 */
+			@Override
+			public String deparse(Charset cs)
+			{
+				throw new UnsupportedOperationException(
+					"no valid deparse result for Identifier.Simple.None");
+			}
+
+			/**
+			 * Returns the empty string.
+			 */
+			@Override
+			public String toString()
+			{
+				return "";
 			}
 		}
 
@@ -1473,6 +1616,10 @@ public abstract class Lexicals
 
 			private Qualified(Simple qualifier, T local)
 			{
+				if ( qualifier instanceof None  ||  local instanceof None )
+					throw new IllegalArgumentException(
+						"no component of a qualified identifier may be None");
+
 				m_qualifier = qualifier;
 				m_local = requireNonNull(local);
 			}
@@ -1485,6 +1632,10 @@ public abstract class Lexicals
 					throw new InvalidObjectException(
 						"Identifier.Qualified deserialized with " +
 						"null local part");
+				if ( m_qualifier instanceof None  ||  m_local instanceof None )
+					throw new InvalidObjectException(
+						"Identifier.Qualified deserialized with None as " +
+						"a component");
 			}
 
 			@Override

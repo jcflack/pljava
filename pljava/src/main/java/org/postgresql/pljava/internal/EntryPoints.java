@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2020-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -16,7 +16,9 @@ import java.lang.invoke.MethodType;
 import static java.lang.invoke.MethodType.methodType;
 
 import java.security.AccessControlContext;
+import java.security.AccessController;
 import static java.security.AccessController.doPrivileged;
+import java.security.Permission;
 import java.security.PrivilegedAction;
 
 import java.sql.SQLData;
@@ -27,6 +29,8 @@ import java.sql.SQLInput;
 import java.sql.SQLOutput;
 
 import static java.util.Objects.requireNonNull;
+
+import java.util.function.Consumer;
 
 import org.postgresql.pljava.internal.UncheckedException;
 import static org.postgresql.pljava.internal.UncheckedException.unchecked;
@@ -170,8 +174,8 @@ class EntryPoints
 	 * as ordinary function calls are, and the {@code ParameterFrame} save and
 	 * restore mechanism relies on those, so it is better for this entry point
 	 * also to be handled specially.
-	 * @param t Invocable carrying the appropriate AccessControlContext (t's
-	 * action is unused and expected to be null)
+	 * @param target Invocable carrying the appropriate AccessControlContext
+	 * (<var>target</var>'s action is unused and expected to be null)
 	 * @param o the UDT instance
 	 * @param stream the SQLOutput stream on which the type's internal
 	 * representation will be written
@@ -269,8 +273,8 @@ class EntryPoints
 	 * NUL-terminated storage form, and without being separately wrapped in
 	 * {@code pushInvocation}/{@code popInvocation}, so it gets its own entry
 	 * point here to avoid use of the static parameter area.
-	 * @param mh a MethodHandle to the class's static parse method, which will
-	 * allocate and return an instance.
+	 * @param target a MethodHandle to the class's static parse method, which
+	 * will allocate and return an instance.
 	 * @param textRep the text representation
 	 * @param typeName the SQL type name to be associated with the instance
 	 * @return the allocated and initialized instance
@@ -372,6 +376,22 @@ class EntryPoints
 		};
 
 		return doPrivilegedAndUnwrap(action, acc);
+	}
+
+	/**
+	 * Returns a permission checker for use when enforcing.
+	 *<p>
+	 * With JEP 486, Java essentially becomes everything-is-allowed, except
+	 * where user code makes its own permission checks. JEP 486 changed
+	 * {@link AccessController#checkPermission(Permission) checkPermission}
+	 * to unconditionally throw an exception. So checking has to be abstracted,
+	 * using the {@code Consumer} returned by this method when the Java runtime
+	 * supports it, otherwise a different {@code Consumer} that does something
+	 * else.
+	 */
+	static Consumer<Permission> permissionChecker()
+	{
+		return AccessController::checkPermission;
 	}
 
 	/**

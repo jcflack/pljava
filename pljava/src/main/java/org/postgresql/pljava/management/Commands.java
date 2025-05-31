@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2021 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -18,12 +18,19 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.Authenticator;
+import java.net.HttpURLConnection;
+import java.net.PasswordAuthentication;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLConnection;
+import java.net.URLPermission;
 import java.nio.ByteBuffer;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CharacterCodingException;
+import java.security.Permission;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -36,6 +43,8 @@ import java.sql.SQLSyntaxErrorException;
 import java.sql.Statement;
 import java.text.ParseException;
 import java.util.ArrayList;
+import static java.util.Arrays.fill;
+import static java.util.Objects.requireNonNullElse;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarInputStream;
@@ -61,6 +70,7 @@ import org.postgresql.pljava.internal.Oid;
 import static org.postgresql.pljava.internal.Privilege.doPrivileged;
 import static org.postgresql.pljava.jdbc.SQLUtils.getDefaultConnection;
 import org.postgresql.pljava.sqlj.Loader;
+import static org.postgresql.pljava.sqlj.Loader.PUBLIC_SCHEMA;
 
 import org.postgresql.pljava.annotation.Function;
 import org.postgresql.pljava.annotation.SQLAction;
@@ -81,18 +91,18 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.install_jar(&lt;jar_url&gt;, &lt;jar_name&gt;, &lt;deploy&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.install_jar(url...)</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.install_jar(url...)</caption>
  * <tr>
- * <td valign="top"><b>jar_url</b></td>
+ * <td><b>jar_url</b></td>
  * <td>The URL that denotes the location of the jar that should be loaded </td>
  * </tr>
  * <tr>
- * <td valign="top"><b>jar_name</b></td>
+ * <td><b>jar_name</b></td>
  * <td>This is the name by which this jar can be referenced once it has been
  * loaded</td>
  * </tr>
  * <tr>
- * <td valign="top"><b>deploy</b></td>
+ * <td><b>deploy</b></td>
  * <td>True if the jar should be deployed according to a {@link
  * org.postgresql.pljava.management.SQLDeploymentDescriptor deployment
  * descriptor}, false otherwise</td>
@@ -102,20 +112,20 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.install_jar(&lt;jar_image&gt;, &lt;jar_name&gt;, &lt;deploy&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for
+ * <blockquote><table class="striped"><caption>Parameters for
  * sqlj.install_jar(bytea...)</caption>
  * <tr>
- * <td valign="top"><b>jar_image</b></td>
+ * <td><b>jar_image</b></td>
  * <td>The byte array that constitutes the contents of the jar that should be
  * loaded </td>
  * </tr>
  * <tr>
- * <td valign="top"><b>jar_name</b></td>
+ * <td><b>jar_name</b></td>
  * <td>This is the name by which this jar can be referenced once it has been
  * loaded</td>
  * </tr>
  * <tr>
- * <td valign="top"><b>deploy</b></td>
+ * <td><b>deploy</b></td>
  * <td>True if the jar should be deployed according to a {@link
  * org.postgresql.pljava.management.SQLDeploymentDescriptor deployment
  * descriptor}, false otherwise</td>
@@ -129,17 +139,17 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.replace_jar(&lt;jar_url&gt;, &lt;jar_name&gt;, &lt;redeploy&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.replace_jar(url...)</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.replace_jar(url...)</caption>
  * <tr>
- * <td valign="top"><b>jar_url</b></td>
+ * <td><b>jar_url</b></td>
  * <td>The URL that denotes the location of the jar that should be loaded </td>
  * </tr>
  * <tr>
- * <td valign="top"><b>jar_name</b></td>
+ * <td><b>jar_name</b></td>
  * <td>The name of the jar to be replaced</td>
  * </tr>
  * <tr>
- * <td valign="top"><b>redeploy</b></td>
+ * <td><b>redeploy</b></td>
  * <td>True if the old and new jar should be undeployed and deployed according
  * to their respective {@link
  * org.postgresql.pljava.management.SQLDeploymentDescriptor deployment
@@ -150,19 +160,19 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.replace_jar(&lt;jar_image&gt;, &lt;jar_name&gt;, &lt;redeploy&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for
+ * <blockquote><table class="striped"><caption>Parameters for
  * sqlj.replace_jar(bytea...)</caption>
  * <tr>
- * <td valign="top"><b>jar_image</b></td>
+ * <td><b>jar_image</b></td>
  * <td>The byte array that constitutes the contents of the jar that should be
  * loaded </td>
  * </tr>
  * <tr>
- * <td valign="top"><b>jar_name</b></td>
+ * <td><b>jar_name</b></td>
  * <td>The name of the jar to be replaced</td>
  * </tr>
  * <tr>
- * <td valign="top"><b>redeploy</b></td>
+ * <td><b>redeploy</b></td>
  * <td>True if the old and new jar should be undeployed and deployed according
  * to their respective {@link
  * org.postgresql.pljava.management.SQLDeploymentDescriptor deployment
@@ -177,13 +187,13 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.remove_jar(&lt;jar_name&gt;, &lt;undeploy&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.remove_jar</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.remove_jar</caption>
  * <tr>
- * <td valign="top"><b>jar_name</b></td>
+ * <td><b>jar_name</b></td>
  * <td>The name of the jar to be removed</td>
  * </tr>
  * <tr>
- * <td valign="top"><b>undeploy</b></td>
+ * <td><b>undeploy</b></td>
  * <td>True if the jar should be undeployed according to its {@link
  * org.postgresql.pljava.management.SQLDeploymentDescriptor deployment
  * descriptor}, false otherwise</td>
@@ -197,7 +207,7 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.get_classpath(&lt;schema&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.get_classpath</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.get_classpath</caption>
  * <tr>
  * <td><b>schema</b></td>
  * <td>The name of the schema</td>
@@ -212,7 +222,7 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.set_classpath(&lt;schema&gt;, &lt;classpath&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.set_classpath</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.set_classpath</caption>
  * <tr>
  * <td><b>schema</b></td>
  * <td>The name of the schema</td>
@@ -229,7 +239,7 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.add_type_mapping(&lt;sqlTypeName&gt;, &lt;className&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.add_type_mapping</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.add_type_mapping</caption>
  * <tr>
  * <td><b>sqlTypeName</b></td>
  * <td>The name of the SQL type. The name can be qualified with a
@@ -249,7 +259,7 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * <blockquote><code>SELECT sqlj.drop_type_mapping(&lt;sqlTypeName&gt;);</code>
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.drop_type_mapping</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.drop_type_mapping</caption>
  * <tr>
  * <td><b>sqlTypeName</b></td>
  * <td>The name of the SQL type. The name can be qualified with a
@@ -268,7 +278,7 @@ import static org.postgresql.pljava.annotation.Function.Security.DEFINER;
  * {@code SELECT sqlj.alias_java_language(<alias>, sandboxed => <boolean>);}
  * </blockquote>
  * <h4>Parameters</h4>
- * <blockquote><table><caption>Parameters for sqlj.alias_java_language</caption>
+ * <blockquote><table class="striped"><caption>Parameters for sqlj.alias_java_language</caption>
  * <tr>
  * <td><b>alias</b></td>
  * <td>The name desired for the language alias. Language names are not
@@ -388,6 +398,48 @@ public class Commands
 		Identifier.Simple.fromCatalog("public");
 
 	/**
+	 * An {@link Authenticator} that will try the {@code userinfo} of the
+	 * requesting URL if present.
+	 *<p>
+	 * Beware that such URLs will appear in
+	 * {@code sqlj.jar_repository.jarorigin} if used to install a jar!
+	 */
+	private static class EmbeddedPwdAuthenticator extends Authenticator
+	{
+		private EmbeddedPwdAuthenticator() { }
+
+		static final EmbeddedPwdAuthenticator INSTANCE =
+			new EmbeddedPwdAuthenticator();
+
+		@Override
+		protected PasswordAuthentication getPasswordAuthentication()
+		{
+			String userinfo =
+				URI.create(getRequestingURL().toString()).getUserInfo();
+			if ( null == userinfo )
+				return null;
+			int len = userinfo.length();
+			int uend = userinfo.indexOf(':');
+			int pstart;
+			if ( -1 == uend )
+				uend = pstart = len;
+			else
+				pstart = 1 + uend;
+			String u = userinfo.substring(0, uend);
+			char[] p = new char[len - pstart];
+			try
+			{
+				userinfo.getChars(pstart, len, p, 0);
+				return new PasswordAuthentication(u, p);
+			}
+			finally
+			{
+				fill(p, '\245'); // PasswordAuthentication clones it
+			}
+		}
+	}
+
+	/**
 	 * Reads the jar found at the specified URL and stores the entries in the
 	 * jar_entry table.
 	 * 
@@ -399,9 +451,40 @@ public class Commands
 	{
 		try
 		{
-			URL url = new URL(urlString);
+			URL url = new URI(urlString).toURL();
 			URLConnection uc = url.openConnection();
+			uc.setRequestProperty("Accept",
+				"application/java-archive, " +
+				"application/jar;q=0.9, application/jar-archive;q=0.9, " +
+				"application/x-java-archive;q=0.9, " +
+				"application/*;q=0.3, */*;q=0.2"
+			);
 			long[] sz = new long[1];
+			Permission[] least = { uc.getPermission() };
+
+			if ( uc instanceof HttpURLConnection )
+			{
+				/*
+				 * Augment what uc returned as the least privilege set needed
+				 * to connect. HttpURLConnection's getPermission method is older
+				 * than URLPermission, and it only returns a SocketPermission.
+				 * Set up 'least' to include both, so as not to end up with an
+				 * empty permission set when 'least' includes one and the policy
+				 * granted the other.
+				 */
+				least = new Permission[] {
+					least[0],
+					new URLPermission(urlString, "GET:Accept")
+				};
+
+				/*
+				 * In case authentication is needed, set an Authenticator that
+				 * will try userinfo from the URL if present. (Beware that jar
+				 * origin URLs are stored in sqlj.jar_repository.jarorigin!)
+				 */
+				((HttpURLConnection)uc).setAuthenticator(
+					EmbeddedPwdAuthenticator.INSTANCE);
+			}
 
 			/*
 			 * Do uc.connect() with PL/Java implementation's permissions, but
@@ -413,16 +496,21 @@ public class Commands
 					uc.connect();
 					sz[0] = uc.getContentLengthLong();
 					return uc.getInputStream();
-				}, null, uc.getPermission())
+				}, null, least)
 			)
 			{
 				addClassImages(jarId, urlStream, sz[0]);
 			}
 		}
+		catch(URISyntaxException e)
+		{
+			throw new SQLException("reading jar file: " +
+				e.toString(), "46001", e);
+		}
 		catch(IOException e)
 		{
-			throw new SQLException("I/O exception reading jar file: " +
-				e.getMessage());
+			throw new SQLException("reading jar file: " +
+				e.toString(), "58030", e);
 		}
 	}
 
@@ -528,8 +616,8 @@ public class Commands
 		}
 		catch(IOException e)
 		{
-			throw new SQLException("I/O exception reading jar file: "
-				+ e.getMessage(), "58030", e);
+			throw new SQLException("reading jar file: "
+				+ e.toString(), "58030", e);
 		}
 	}
 
@@ -854,7 +942,8 @@ public class Commands
 	 * 
 	 * @param schemaName Name of the schema for which this path is valid.
 	 * @param path Colon separated list of names. Each name must denote the name
-	 *            of a jar that is present in the jar repository.
+	 *            of a jar that is present in the jar repository. An empty
+	 *            string or null equivalently set no class path for the schema.
 	 * @throws SQLException If no schema can be found with the givene name, or
 	 *             if one or several names of the path denotes a nonexistant jar
 	 *             file.
@@ -942,7 +1031,6 @@ public class Commands
 		{
 			// Insert the new path.
 			//
-			;
 			try(PreparedStatement stmt = getDefaultConnection()
 				.prepareStatement(
 					"INSERT INTO sqlj.classpath_entry("+
@@ -962,41 +1050,60 @@ public class Commands
 		Loader.clearSchemaLoaders();
 	}
 
+	/**
+	 * Run <var>runnable</var> while a temporary class path including
+	 * <var>jarName</var>, if needed, is imposed on the current
+	 * (head-of-{@code search_path}) schema.
+	 *<p>
+	 * The temporary class path is imposed if <var>jarName</var> is not already
+	 * included in the current schema's class path, and also not in the public
+	 * schema's class path if the current schema is not the public one.
+	 *
+	 * @param jarName Caller must have checked (as with {@code assertJarName})
+	 *  that this is a sensible jar name, in particular without the colons that
+	 *  separate a PL/Java class path.
+	 * @param schemaMayVanish Caller passes true if this is a {@code remove_jar}
+	 *  action, when it should not be surprising if undoing the temporary class
+	 *  path fails because the schema is gone after the undeploy steps.
+	 * @param runnable The deploy/undeploy actions to take while the temporary
+	 *  class path is possibly imposed.
+	 */
 	private static void withJarInPath(String jarName, boolean schemaMayVanish,
 		Checked.Runnable<SQLException> runnable) throws SQLException
 	{
+		String jarNameX = ':' + jarName + ':';
 		Identifier.Simple originalSchema = getCurrentSchema();
-		String originalClasspath = getClassPath(originalSchema);
-		boolean changed;
-		if(originalClasspath == null)
-		{
-			setClassPath(originalSchema, jarName);
-			changed = true;
-		}
-		else
-		{
-			String[] elems = originalClasspath.split(":");
-			int idx = elems.length;
-			boolean found = false;
-			while(--idx >= 0)
-				if(elems[idx].equals(jarName))
-				{
-					found = true;
-					break;
-				}
+		String originalClasspath =
+			requireNonNullElse(getClassPath(originalSchema), "");
 
-			if(found)
-				changed = false;
-			else
-			{
-				setClassPath(originalSchema, jarName + ':' + originalClasspath);
-				changed = true;
-			}
+		boolean found = false;
+
+		if ( ! originalClasspath.isEmpty() )
+			found = (':'+originalClasspath+':').contains(jarNameX);
+		else if ( ! PUBLIC_SCHEMA.equals(originalSchema) )
+		{
+			String fallbackClasspath =
+				requireNonNullElse(getClassPath(PUBLIC_SCHEMA), "");
+			found = (':'+fallbackClasspath+':').contains(jarNameX);
+		}
+
+		if ( ! found )
+		{
+			String newPath = jarName;
+			if ( ! originalClasspath.isEmpty() )
+				newPath += ':' + originalClasspath;
+			setClassPath(originalSchema, newPath);
 		}
 
 		runnable.run();
 
-		if ( changed )
+		/*
+		 * This is not a finally, because if something went wrong PostgreSQL
+		 * won't allow the SPI operations in setClassPath anyway, and that's
+		 * also ok, because if something went wrong PostgreSQL will roll back
+		 * the transaction.
+		 */
+		if ( ! found )
 		{
 			try
 			{
@@ -1135,7 +1242,6 @@ public class Commands
 	 * jar.
 	 * 
 	 * @param jarName The name to check.
-	 * @throws IOException
 	 */
 	private static void assertJarName(String jarName) throws SQLException
 	{
@@ -1304,7 +1410,7 @@ public class Commands
 	/**
 	 * Returns the Oid for the given Schema.
 	 * 
-	 * @param schemaName The name of the schema.
+	 * @param schema The name of the schema.
 	 * @return The Oid of the given schema or <code>null</code> if no such
 	 *         schema is found.
 	 * @throws SQLException
@@ -1373,17 +1479,20 @@ public class Commands
 		try
 		{
 			deployInstall(jarId, jarName);
+			deploy = false; // flag that deployInstall completed
 		}
-		catch ( Error | RuntimeException | SQLException e )
+		finally
 		{
-			Loader.clearSchemaLoaders();
-			throw e;
+			if ( deploy ) // or in case it didn't complete ...
+				Loader.clearSchemaLoaders();
 		}
 	}
 
 	private static void replaceJar(String urlString, String jarName,
 		boolean redeploy, byte[] image) throws SQLException
 	{
+		assertJarName(jarName);
+
 		AclId[] ownerRet = new AclId[1];
 		int jarId = getJarId(jarName, ownerRet);
 		if(jarId < 0)

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2020 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -16,6 +16,8 @@ package org.postgresql.pljava.jdbc;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.sql.Array;
 import java.sql.Blob;
@@ -44,32 +46,75 @@ import java.util.BitSet;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List; // for SlotTester
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+import org.postgresql.pljava.internal.Invocation;
 import org.postgresql.pljava.internal.Oid;
 import org.postgresql.pljava.internal.PgSavepoint;
+
+import java.lang.reflect.Field;
+import org.postgresql.pljava.Adapter;
+import org.postgresql.pljava.internal.SPI;
+import static org.postgresql.pljava.internal.UncheckedException.unchecked;
+import org.postgresql.pljava.model.Portal;
+import static org.postgresql.pljava.model.Portal.Direction.FORWARD;
+import org.postgresql.pljava.model.SlotTester;
+import org.postgresql.pljava.model.TupleTableSlot;
+import org.postgresql.pljava.pg.TupleTableSlotImpl;
 
 /**
  * Provides access to the current connection (session) the Java stored
  * procedure is running in.  It is returned from the driver manager
  * with
  * <code>DriverManager.getConnection("jdbc:default:connection");</code>
- * and cannot be managed in any way since it's already running inside
- * a transaction.  This means the following methods cannot be used.
- * <ul>
- * <li><code>commit()</code></li>
- * <li><code>rollback()</code></li>
- * <li><code>setAutoCommit()</code></li>
- * <li><code>setTransactionIsolation()</code></li>
- * </ul>
+ *<p>
+ * PostgreSQL calls functions within a transaction and does not allow them to
+ * issue transaction control operations ({@code commit} / {@code rollback} /
+ * {@code setAutoCommit} / {@code setTransactionIsolation}). It can allow
+ * commit / rollback within a procedure or a {@code DO} block, if that
+ * procedure or {@code DO} block was not executed in an existing explicit
+ * transaction.
  * @author Thomas Hallgren
  */
-public class SPIConnection implements Connection
+public class SPIConnection implements Connection, SlotTester
 {
+	@Override // SlotTester
+	public Portal unwrapAsPortal(ResultSet rs) throws SQLException
+	{
+		return ((SPIResultSet)rs).unwrapAsPortal();
+	}
+
+	@Override // SlotTester
+	@SuppressWarnings("deprecation")
+	public List<TupleTableSlot> test(String query)
+	{
+		try ( Statement s = createStatement() )
+		{
+			ResultSet rs = s.executeQuery(query);
+			Portal p = unwrapAsPortal(rs);
+			return p.fetch(FORWARD, Portal.ALL);
+		}
+		catch ( SQLException e )
+		{
+			throw unchecked(e);
+		}
+	}
+
+	@Override // SlotTester
+	public Adapter adapterPlease(String cname, String field)
+	throws ReflectiveOperationException
+	{
+		Class<? extends SlotTester.Visible> cls =
+			Class.forName(cname).asSubclass(SlotTester.Visible.class);
+		Field f = cls.getField(field);
+		return (Adapter)f.get(null);
+	}
+
 	/**
 	 * The version number of the currently executing PostgreSQL
 	 * server.
@@ -187,25 +232,31 @@ public class SPIConnection implements Connection
 	}
 
 	/**
-	 * It's not legal to do a commit within a call from SQL.
-	 * @throws SQLException indicating that this feature is not supported.
+	 * Commits the top-level transaction.
+	 *<p>
+	 * PostgreSQL does not allow such an action from within a function, but it
+	 * can be allowed within a procedure or DO block, if not executed within
+	 * an existing explicit transaction.
 	 */
 	@Override
 	public void commit()
 	throws SQLException
 	{
-		throw new UnsupportedFeatureException("Connection.commit");
+		SPI.commit();
 	}
 
 	/**
-	 * It's not legal to do a rollback within a call from SQL.
-	 * @throws SQLException indicating that this feature is not supported.
+	 * Rolls back the top-level transaction.
+	 *<p>
+	 * PostgreSQL does not allow such an action from within a function, but it
+	 * can be allowed within a procedure or DO block, if not executed within
+	 * an existing explicit transaction.
 	 */
 	@Override
 	public void rollback()
 	throws SQLException
 	{
-		throw new UnsupportedFeatureException("Connection.rollback");
+		SPI.rollback();
 	}
 
 	/**
@@ -848,9 +899,9 @@ public class SPIConnection implements Connection
 		{
 			try
 			{
-				return (T)new URL((String)value);
+				return (T)new URI((String)value).toURL();
 			}
-			catch(MalformedURLException e)
+			catch(URISyntaxException | MalformedURLException e)
 			{
 				throw new SQLException(e.toString());
 			}

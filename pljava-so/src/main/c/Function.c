@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2022 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -34,21 +34,16 @@
 #include <funcapi.h>
 #include <utils/typcache.h>
 
+#if PG_VERSION_NUM >= 160000
+#define PG_FUNCNAME_MACRO __func__
+#endif
+
 #ifdef _MSC_VER
 #	define strcasecmp _stricmp
 #	define strncasecmp _strnicmp
 #endif
 
 #define PARAM_OIDS(procStruct) (procStruct)->proargtypes.values
-
-#if 90305<=PG_VERSION_NUM || \
-	90209<=PG_VERSION_NUM && PG_VERSION_NUM<90300 || \
-	90114<=PG_VERSION_NUM && PG_VERSION_NUM<90200 || \
-	90018<=PG_VERSION_NUM && PG_VERSION_NUM<90100 || \
-	80422<=PG_VERSION_NUM && PG_VERSION_NUM<90000
-#else
-#error "Need fallback for heap_copy_tuple_as_datum"
-#endif
 
 #define COUNTCHECK(refs, prims) ((jshort)(((refs) << 8) | ((prims) & 0xff)))
 
@@ -697,10 +692,11 @@ classMismatch:
 	ereport(ERROR, (errmsg(
 		"PL/Java UDT with oid %u declares input/output/send/recv functions "
 		"in more than one class", typeId)));
+	pg_unreachable(); /* MSVC otherwise is not convinced */
 }
 
 static Function Function_create(
-	Oid funcOid, bool trusted, bool forTrigger,
+	Oid funcOid, bool forTrigger,
 	bool forValidator, bool checkBody)
 {
 	Function self;
@@ -711,17 +707,10 @@ static Function Function_create(
 		PgObject_getValidTuple(LANGOID, procStruct->prolang, "language");
 	Form_pg_language lngStruct = (Form_pg_language)GETSTRUCT(lngTup);
 	jstring lname = String_createJavaStringFromNTS(NameStr(lngStruct->lanname));
-	bool ltrust = lngStruct->lanpltrusted;
+	bool trusted = lngStruct->lanpltrusted;
 	jstring schemaName;
-	Ptr2Long p2l;
 	Datum d;
 	jobject invocable;
-
-	if ( trusted != ltrust )
-		elog(ERROR,
-			"function with oid %u invoked through wrong call handler "
-			"for %strusted language %s", funcOid, ltrust ? "" : "un",
-			NameStr(lngStruct->lanname));
 
 	d = heap_copy_tuple_as_datum(procTup, Type_getTupleDesc(s_pgproc_Type, 0));
 
@@ -729,14 +718,12 @@ static Function Function_create(
 
 	self = /* will rely on the fact that allocInstance zeroes memory */
 		(Function)PgObjectClass_allocInstance(s_FunctionClass,TopMemoryContext);
-	p2l.longVal = 0;
-	p2l.ptrVal = (void *)self;
 
 	PG_TRY();
 	{
 		invocable =
 			JNI_callStaticObjectMethod(s_Function_class, s_Function_create,
-			p2l.longVal, Type_coerceDatum(s_pgproc_Type, d), lname,
+			PointerGetJLong(self), Type_coerceDatum(s_pgproc_Type, d), lname,
 			schemaName,
 			trusted ? JNI_TRUE : JNI_FALSE,
 			forTrigger ? JNI_TRUE : JNI_FALSE,
@@ -818,17 +805,14 @@ static Function Function_create(
  * in currentInvocation->function upon successful return from here.
  */
 static inline Function
-getFunction(
-	Oid funcOid, bool trusted, bool forTrigger,
-	bool forValidator, bool checkBody)
+getFunction(Oid funcOid, bool forTrigger, bool forValidator, bool checkBody)
 {
 	Function func =
 		forValidator ? NULL : (Function)HashMap_getByOid(s_funcMap, funcOid);
 
 	if ( NULL == func )
 	{
-		func = Function_create(
-			funcOid, trusted, forTrigger, forValidator, checkBody);
+		func = Function_create(funcOid, forTrigger, forValidator, checkBody);
 		if ( NULL != func )
 			HashMap_putByOid(s_funcMap, funcOid, func);
 	}
@@ -837,11 +821,80 @@ getFunction(
 	return func;
 }
 
-jobject Function_getTypeMap(Function self)
+/*
+ * Some functions that inquire about the "currently-executing" function
+ * (innermost, if there is more than one invocation of PL/Java on the stack);
+ * that is, they refer to currentInvocation->function as set in getFunction
+ * above.
+ *
+ * These functions have been moved closer together from originally scattered
+ * locations, which exposes their several different styles of checking for a
+ * current Invocation and its Function link. At one time, currentInvocation
+ * would be NULL when there was no call on the stack. There is now always a
+ * struct there, but its nestLevel (and other key values) are zero when
+ * nothing's been called. That should allow adapting these functions to a
+ * uniform, simpler style ... some other day.
+ */
+
+bool Function_isCurrentReadOnly(void)
 {
-	return self->func.nonudt.typeMap;
+	/*
+	 * function will be NULL during resolution of class and java function. At
+	 * that time, no updates are allowed (or needed). (That's a little too glib;
+	 * the effect of passing true to SPI functions having a read-only parameter,
+	 * which is what the result of this function is used for, goes beyond
+	 * preventing updates; it also implies the use of an existing snapshot
+	 * instead of a newly-taken one, meaning recent preceding updates may not
+	 * be visible. During class resolution, the class loader has in fact to
+	 * override this, not because it intends to write anything, but in order
+	 * to see newly-loaded jar files! install_jar(..., deploy=>true) necessarily
+	 * has to find classes in a jar that has just been loaded in the same
+	 * transaction.)
+	 */
+	if (currentInvocation->function == NULL)
+		return true;
+	return currentInvocation->function->readOnly;
 }
 
+/*
+ * Returns a JNI global reference to the initiating (schema) class loader used
+ * to load the currently-executing function.
+ */
+jobject Function_currentLoader(void)
+{
+	Function f;
+
+	if ( ! HAS_INVOCATION ) /* I believe this check is superfluous ... */
+	{
+		if ( NULL != currentInvocation->function ) /* ... here's why. */
+			elog(DEBUG1, /* I never expect to see this message. */
+				"non-null ->function seen in Invocation with none current");
+		return NULL;
+	}
+	f = currentInvocation->function;
+	if ( NULL == f )
+		return NULL;
+	return f->schemaLoader;
+}
+
+/*
+ * Returns the type map held by the innermost executing PL/Java function's
+ * schema loader (the initiating loader that was used to resolve the function).
+ * The type map is a map from Java Oid objects to Class<? extends SQLData>,
+ * as resolved by that loader. This is effectively Function_currentLoader()
+ * followed by JNI-invoking getTypeMap on the loader, but cached to avoid JNI.
+ */
+jobject Function_currentTypeMap(void)
+{
+	Function f = currentInvocation->function;
+	return NULL == f ? NULL : f->func.nonudt.typeMap;
+}
+
+/*
+ * True if this function is mentioned at any level of the stack of current
+ * PL/Java invocations. Used in Function_clearFunctionCache to avoid freeing
+ * the struct while referenced.
+ */
 static bool Function_inUse(Function func)
 {
 	Invocation* ic = currentInvocation;
@@ -903,7 +956,7 @@ passAsPrimitive(Type t)
 
 Datum
 Function_invoke(
-	Oid funcoid, bool trusted, bool forTrigger, bool forValidator,
+	Oid funcoid, bool forTrigger, bool forValidator,
 	bool checkBody, PG_FUNCTION_ARGS)
 {
 	Function self;
@@ -912,7 +965,7 @@ Function_invoke(
 	Type invokerType;
 	bool skipParameterConversion = false;
 
-	self = getFunction(funcoid, trusted, forTrigger, forValidator, checkBody);
+	self = getFunction(funcoid, forTrigger, forValidator, checkBody);
 
 	if ( forValidator )
 		PG_RETURN_VOID();
@@ -1101,28 +1154,6 @@ void pljava_Function_setParameter(Function self, int index, jvalue value)
 	JNI_setObjectArrayElement(s_referenceParameters, numRefs - 1, value.l);
 }
 
-bool Function_isCurrentReadOnly(void)
-{
-	/* function will be 0 during resolve of class and java function. At
-	 * that time, no updates are allowed (or needed).
-	 */
-	if (currentInvocation->function == 0)
-		return true;
-	return currentInvocation->function->readOnly;
-}
-
-jobject Function_currentLoader(void)
-{
-	Function f;
-
-	if ( NULL == currentInvocation )
-		return NULL;
-	f = currentInvocation->function;
-	if ( NULL == f )
-		return NULL;
-	return f->schemaLoader;
-}
-
 /*
  * Class:     org_postgresql_pljava_internal_Function_EarlyNatives
  * Method:    _parameterArea
@@ -1154,7 +1185,6 @@ JNIEXPORT jboolean JNICALL
 	jint numParams, jint returnType, jstring returnJType,
 	jintArray paramTypes, jobjectArray paramJTypes, jobjectArray outJTypes)
 {
-	Ptr2Long p2l;
 	Function self;
 	MemoryContext ctx;
 	jstring jtn;
@@ -1163,8 +1193,7 @@ JNIEXPORT jboolean JNICALL
 	uint16 primParams = 0;
 	bool returnTypeIsOutParameter = false;
 
-	p2l.longVal = wrappedPtr;
-	self = (Function)p2l.ptrVal;
+	self = JLongGet(Function, wrappedPtr);
 	ctx = GetMemoryChunkContext(self);
 
 	BEGIN_NATIVE_NO_ERRCHECK
@@ -1263,13 +1292,11 @@ JNIEXPORT void JNICALL
 	JNIEnv *env, jclass jFunctionClass, jlong wrappedPtr, jobject schemaLoader,
 	jclass clazz, jboolean readOnly, jint funcInitial, jint udtId)
 {
-	Ptr2Long p2l;
 	Function self;
 	HeapTuple typeTup;
 	Form_pg_type pgType;
 
-	p2l.longVal = wrappedPtr;
-	self = (Function)p2l.ptrVal;
+	self = JLongGet(Function, wrappedPtr);
 
 	BEGIN_NATIVE_NO_ERRCHECK
 	PG_TRY();
@@ -1334,7 +1361,6 @@ JNIEXPORT void JNICALL
 	JNIEnv *env, jclass jFunctionClass, jlong wrappedPtr,
 	jobjectArray resolvedTypes, jobjectArray explicitTypes, jint index)
 {
-	Ptr2Long p2l;
 	Function self;
 	Type origType;
 	Type replType;
@@ -1358,8 +1384,7 @@ JNIEXPORT void JNICALL
 	bool actOnReturnType = ( -1 == index ||  -2 == index );
 	bool coerceOutAndSingleton = ( -2 == index );
 
-	p2l.longVal = wrappedPtr;
-	self = (Function)p2l.ptrVal;
+	self = JLongGet(Function, wrappedPtr);
 
 	BEGIN_NATIVE_NO_ERRCHECK
 	PG_TRY();

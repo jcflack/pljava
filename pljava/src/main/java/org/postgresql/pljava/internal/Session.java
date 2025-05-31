@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2022 Tada AB and other contributors, as listed below.
+ * Copyright (c) 2004-2025 Tada AB and other contributors, as listed below.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the The BSD 3-Clause License
@@ -19,6 +19,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.HashMap;
+import static java.util.Objects.requireNonNull;
+import java.util.Properties;
 
 import org.postgresql.pljava.ObjectPool;
 import org.postgresql.pljava.PooledObject;
@@ -49,8 +51,16 @@ public class Session implements org.postgresql.pljava.Session
 		return Holder.INSTANCE;
 	}
 
+	private final Properties m_properties;
+
 	private Session()
 	{
+		/*
+		 * This strategy assumes that no user code will request a Session
+		 * instance until after InstallHelper has poked the frozen properties
+		 * into s_properties.
+		 */
+		m_properties = requireNonNull(s_properties);
 	}
 
 	private static class Holder
@@ -58,33 +68,20 @@ public class Session implements org.postgresql.pljava.Session
 		static final Session INSTANCE = new Session();
 	}
 
+	/**
+	 * An unmodifiable defensive copy of the Java system properties that will be
+	 * put here by InstallHelper via package access at startup.
+	 */
+	static Properties s_properties;
+
+	@Override
+	public Properties frozenSystemProperties()
+	{
+		return m_properties;
+	}
+
 	@SuppressWarnings("removal")
 	private final TransactionalMap m_attributes = new TransactionalMap(new HashMap());
-
-	/**
-	 * The Java charset corresponding to the server encoding, or null if none
-	 * such was found. Put here by InstallHelper via package access at startup.
-	 */
-	static Charset s_serverCharset;
-
-	/**
-	 * A static method (not part of the API-exposed Session interface) by which
-	 * pljava implementation classes can get hold of the server charset without
-	 * the indirection of getting a Session instance. If there turns out to be
-	 * demand for client code to obtain it through the API, an interface method
-	 * {@code serverCharset} can easily be added later.
-	 * @return The Java Charset corresponding to the server's encoding, or null
-	 * if no matching Java charset was found. That can happen if a corresponding
-	 * Java charset really does exist but is not successfully found using the
-	 * name reported by PostgreSQL. That can be worked around by giving the
-	 * right name explicitly as the system property
-	 * {@code org.postgresql.server.encoding} in {@code pljava.vmoptions} for
-	 * the affected database (or cluster-wide, if the same encoding is used).
-	 */
-	public static Charset implServerCharset()
-	{
-		return s_serverCharset;
-	}
 
 	/**
 	 * Adds the specified listener to the list of listeners that will
