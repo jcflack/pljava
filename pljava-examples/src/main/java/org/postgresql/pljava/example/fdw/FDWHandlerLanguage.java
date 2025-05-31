@@ -246,6 +246,29 @@ public class FDWHandlerLanguage implements Routines
 			Class<? extends PLJavaBasedFDW> cls =
 				Class.forName(target.src()).asSubclass(PLJavaBasedFDW.class);
 
+			/*
+			 * Instantiating the class here at prepare() time entails deciding
+			 * that the instance itself should have no state that encapsulates
+			 * *which* ForeignDataWrapper it represents, as there are no clues
+			 * available, at the time a handler is called, as to which FDW it is
+			 * being called for. The class must, therefore, be an umbrella class
+			 * equally representative of any and all FDWs declared with it for
+			 * a handler.
+			 *
+			 * That's the right call, because the instance is needed when
+			 * dispatching validator calls, and those come with no indication of
+			 * which specific object the options being validated are for.
+			 *
+			 * Any per-wrapper/server/connection/etc. state that is worth saving
+			 * will need other subordinate classes to hold it.
+			 *
+			 * It's convenient to instantiate the class here in the same try
+			 * block as the class lookup, though we haven't yet decided whether
+			 * we are preparing a validator or handler template. The validator
+			 * will definitely need the instance, to call validator instance
+			 * methods on it; the handler might not end up needing the instance
+			 * at all. More ruminations below at: // it's a handler.
+			 */
 			fdw = cls.getConstructor().newInstance();
 		}
 		catch ( ReflectiveOperationException e )
@@ -253,14 +276,63 @@ public class FDWHandlerLanguage implements Routines
 			throw new SQLException(target.toString(), e); // shouldn't happen!
 		}
 
-		if ( target.argTypes().isEmpty() ) // it's a handler
+		if ( target.argTypes().isEmpty() ) // it's a handler.
 		{
+			/*
+			 * Anything done where this comment is, is done at prepare() time
+			 * and cached for the lifespan of the handler RegProcedure. This is
+			 * a good place to do pretty much everything needed here, because
+			 *
+			 * 1. it can all be precomputed (the handler takes no arguments, so
+			 *    there will be no new info at specialize() or call() time) and
+			 *
+			 * 2. PostgreSQL makes weirdly heavy use of an FDW handler function,
+			 *    calling it to get a struct of function pointers, throwing all
+			 *    that away when done with the instant query, then calling the
+			 *    handler again the next time the (probably precomputed and
+			 *    completely unchanging) info is needed again. Surprising, but
+			 *    that's what it does.
+			 *
+			 * So deferring anything to specialize() or call() time below that
+			 * could be done here at prepare() time would be hard to explain.
+			 *
+			 * As for exactly what to precompute here, we've got options. Could
+			 * use FFM to generate upcall stubs with the class instance bound
+			 * in, and populate a prototype FdwRoutine struct with those. All
+			 * that would be needed at call() time would be to copy that into
+			 * palloc()d space to return.
+			 *
+			 * Or, there could be a static prototype FdwRoutine struct in the C
+			 * code, populated with fixed pointers to C functions that will
+			 * handle dispatching when called. All that would need to be
+			 * computed here would be which optional interfaces/methods cls
+			 * supports.
+			 *
+			 * Why is that needed? Because PostgreSQL looks at which FdwRoutine
+			 * function pointers are null/not null to learn the capabilities of
+			 * the FDW. So a simple approach here at prepare() time would be to
+			 * reflect on cls, determine which optional interfaces it does
+			 * and doesn't implement, and compute a bitmapm say, corresponding
+			 * to the FdwRoutine function slots. All that would need to happen
+			 * at call() time would be to pass the bits to a little C helper
+			 * that will palloc0() space for an FdwRoutine struct and copy
+			 * just the indicated pointers into it from the prototype.
+			 */
 			return flinfo -> fcinfo ->
 			{
 				/*
-				 * Construct and return an FdwRoutine struct populated with
-				 * upcall stubs according to which mandatory and optional
-				 * methods are implemented by fdw.
+				 * Anything done where this comment is, is done at call() time.
+				 * It shouldn't be much, because PostgreSQL calls FDW handler
+				 * functions more than you'd think. See the prepare-time
+				 * comments above.
+				 *
+				 * Note that, even at handler call time, we get *no* information
+				 * about *which* declared FDW the call is targeting. The handler
+				 * needs to return a struct of pointers to functions that can
+				 * dispatch work involving *any* FDW declared with the same
+				 * handler function. Each of those functions has to be able to
+				 * determine, from the arguments it is passed, just which
+				 * foreign tables / server / wrapper to dispatch to.
 				 */
 			};
 		}
@@ -270,9 +342,13 @@ public class FDWHandlerLanguage implements Routines
 		return flinfo -> fcinfo ->
 		{
 			TupleTableSlot args = fcinfo.arguments();
-			List<String> opts = args.sqlGet(1, ADP_ARRTEXT);
-			int oid = args.sqlGet(2, ADP_OID);
 
+			/*
+			 * Munge the options needing validation from the text[] form
+			 * supplied as arg 1 to the Map<Simple,String> form the validate...
+			 * methods take.
+			 */
+			List<String> opts = args.sqlGet(1, ADP_ARRTEXT);
 			Map<Simple,String> optm = Map.ofEntries(
 				opts.stream().map(s ->
 				{
@@ -285,6 +361,31 @@ public class FDWHandlerLanguage implements Routines
 				})
 				.toArray(Map.Entry[]::new));
 
+			/*
+			 * Dispatch to the right validate... method based on the oid passed
+			 * as arg 2.
+			 *
+			 * Note that each validate... method must do its job with
+			 * far-from-complete information. validateAttributeOptions gets
+			 * a bunch of options to decide about without even knowing what
+			 * table that column is in, let alone its table options, or even
+			 * the type of the column these options are applied to.
+			 * validateTableOptions and validateUserMappingOptions have to do
+			 * their jobs without a clue what table or user mapping the options
+			 * are being put on, let alone what server is responsible for the
+			 * mystery table or mapping. validateServerOptions has to validate
+			 * those with no idea what server they are for or what FDW it is
+			 * to be associated with--and moreover, a server has 'type' and
+			 * 'version' properties, also arbitrary strings just like options,
+			 * but not passed to the validator at all.
+			 *
+			 * Evan validateWrapperOptions has to get by with less than full
+			 * information. If it were passed the handler RegProc, it could at
+			 * least sanity-check that the wrapper declaration has mentioned
+			 * handler and validator functions that aren't, say, from completely
+			 * unrelated extensions. But no such luck.
+			 */
+			int oid = args.sqlGet(2, ADP_OID);
 			switch ( oid )
 			{
 			case ForeignDataWrapperRelationId:
