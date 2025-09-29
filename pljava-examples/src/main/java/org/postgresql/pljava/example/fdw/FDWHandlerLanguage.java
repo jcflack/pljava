@@ -312,7 +312,7 @@ public class FDWHandlerLanguage implements Routines
 			 * function pointers are null/not null to learn the capabilities of
 			 * the FDW. So a simple approach here at prepare() time would be to
 			 * reflect on cls, determine which optional interfaces it does
-			 * and doesn't implement, and compute a bitmapm say, corresponding
+			 * and doesn't implement, and compute a bitmap, say, corresponding
 			 * to the FdwRoutine function slots. All that would need to happen
 			 * at call() time would be to pass the bits to a little C helper
 			 * that will palloc0() space for an FdwRoutine struct and copy
